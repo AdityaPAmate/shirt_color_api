@@ -22,3 +22,5 @@ output/
 # OS Files
 .DS_Store
 Thumbs.db
+
+GroundingDINO/
