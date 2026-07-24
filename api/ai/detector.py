@@ -109,8 +109,22 @@ class ShirtDetector:
         if len(detections.xyxy) == 0:
             return None
 
+        # Original box
+        x1, y1, x2, y2 = detections.xyxy[0]
+
+        # Read image to know its dimensions
+        image = cv2.imread(str(image_path))
+        height, width = image.shape[:2]
+
+        # Add padding
+        padding = 12
+
+        x1 = max(0, x1 - padding)
+        y1 = max(0, y1 - padding)
+        x2 = min(width - 1, x2 + padding)
+        y2 = min(height - 1, y2 + padding)
+
         return {
-            "box": detections.xyxy[0].tolist(),
+            "box": [float(x1), float(y1), float(x2), float(y2)],
             "confidence": float(detections.confidence[0]),
         }
-

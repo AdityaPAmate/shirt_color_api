@@ -55,14 +55,38 @@ class ShirtRecolor:
         # Convert to HSV
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-        # Convert mask to boolean
-        mask = mask.astype(bool)
+        # Convert SAM mask to float
+        alpha = mask.astype(np.float32)
 
-        # Change hue only inside mask
-        hsv[..., 0][mask] = self.COLOR_MAP[color_name]
+        # Blur only the alpha mask (not the segmentation mask)
+        alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
 
-        # Increase saturation
-        hsv[..., 1][mask] = 200
+        alpha[mask == 0] = 0
+
+        # Normalize alpha to range 0-1
+        alpha = alpha / alpha.max()
+
+        # Create copies
+        new_h = hsv[..., 0].astype(np.float32)
+        new_s = hsv[..., 1].astype(np.float32)
+
+        # Blend Hue
+        new_h = (
+                new_h * (1 - alpha)
+                + self.COLOR_MAP[color_name] * alpha
+        )
+
+        # Blend Saturation
+        new_s = (
+                new_s * (1 - alpha)
+                + 200 * alpha
+        )
+
+        # Write back
+        hsv[..., 0] = new_h.astype(np.uint8)
+        hsv[..., 1] = new_s.astype(np.uint8)
+
+
 
         # IMPORTANT:
         # We DO NOT change Value (Brightness).

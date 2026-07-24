@@ -99,10 +99,14 @@ class ShirtSegmenter:
         # Predict mask
         masks, scores, logits = self.predictor.predict(
             box=input_box,
-            multimask_output=False,
+            multimask_output=True,
         )
 
-        return masks[0]
+        # Select the mask with the highest confidence score
+        best_index = np.argmax(scores)
+
+        return masks[best_index]
+
 
     def save_mask(self, mask, output_path):
         """
