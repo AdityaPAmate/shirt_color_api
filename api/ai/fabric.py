@@ -221,6 +221,122 @@ class FabricRenderer:
         return prepared_fabric
 
     ####################################################################
+    # PRESERVE ORIGINAL SHIRT LIGHTING
+    ####################################################################
+
+    ####################################################################
+    # PRESERVE LIGHTING USING A NORMALIZED LIGHTING MAP
+    ####################################################################
+
+    def preserve_lighting(
+            self,
+            person_image,
+            prepared_fabric
+    ):
+        """
+        Preserve folds, wrinkles and shadows without copying the
+        original shirt color.
+
+        Instead of replacing the fabric brightness, we calculate
+        a lighting map from the original image and multiply the
+        fabric by that lighting map.
+
+        This keeps the fabric colours much closer to the uploaded
+        fabric while still showing the original lighting.
+        """
+
+        # ----------------------------------------------------------
+        # Convert both images to float.
+        #
+        # Float images avoid rounding errors during multiplication.
+        # ----------------------------------------------------------
+
+        person = person_image.astype(np.float32)
+        fabric = prepared_fabric.astype(np.float32)
+
+        # ----------------------------------------------------------
+        # Convert the original image to grayscale.
+        #
+        # We only need brightness information.
+        # ----------------------------------------------------------
+
+        gray = cv2.cvtColor(
+            person_image,
+            cv2.COLOR_BGR2GRAY
+        ).astype(np.float32)
+
+        # ----------------------------------------------------------
+        # Blur the grayscale image.
+        #
+        # A Gaussian blur removes tiny texture details and keeps
+        # only the large lighting variations such as folds and
+        # shadows.
+        # ----------------------------------------------------------
+
+        illumination = cv2.GaussianBlur(
+            gray,
+            (31, 31),
+            0
+        )
+
+        # ----------------------------------------------------------
+        # Normalize the lighting map.
+        #
+        # Around 1.0 means no change.
+        #
+        # Dark folds become values below 1.
+        # Bright highlights become values above 1.
+        # ----------------------------------------------------------
+
+        illumination = illumination / (illumination.mean() + 1e-6)
+
+        # ----------------------------------------------------------
+        # Limit the lighting values.
+        #
+        # This prevents extremely dark or bright pixels from
+        # destroying the fabric colours.
+        # ----------------------------------------------------------
+
+        illumination = np.clip(
+            illumination,
+            0.75,
+            1.25
+        )
+
+        # ----------------------------------------------------------
+        # Expand the lighting map from
+        #
+        # (H,W)
+        #
+        # to
+        #
+        # (H,W,3)
+        #
+        # so it can be multiplied with a colour image.
+        # ----------------------------------------------------------
+
+        illumination = illumination[:, :, np.newaxis]
+
+        # ----------------------------------------------------------
+        # Apply lighting to the fabric.
+        # ----------------------------------------------------------
+
+        result = fabric * illumination
+
+        # ----------------------------------------------------------
+        # Prevent pixel values from going outside
+        # the valid image range.
+        # ----------------------------------------------------------
+
+        result = np.clip(
+            result,
+            0,
+            255
+        ).astype(np.uint8)
+
+        return result
+
+    ####################################################################
     # APPLY SHIRT MASK
     ####################################################################
 
@@ -299,16 +415,15 @@ class FabricRenderer:
         """
         Complete fabric rendering pipeline.
 
-        Current Pipeline
-        ----------------
+        Steps
+        -----
         1. Validate inputs.
         2. Prepare fabric.
-        3. Apply shirt mask.
-        4. Return output image.
-
-        Lighting preservation will be added in the next milestone.
+        3. Preserve original lighting.
+        4. Apply shirt mask.
         """
 
+        # Step 1
         prepared_fabric = self.prepare_fabric(
             person_image,
             shirt_mask,
@@ -316,10 +431,17 @@ class FabricRenderer:
             use_tiling
         )
 
+        # Step 2
+        realistic_fabric = self.preserve_lighting(
+            person_image,
+            prepared_fabric
+        )
+
+        # Step 3
         output = self.apply_shirt_mask(
             person_image,
             shirt_mask,
-            prepared_fabric
+            realistic_fabric
         )
 
         return output
