@@ -219,3 +219,107 @@ class FabricRenderer:
             )
 
         return prepared_fabric
+
+    ####################################################################
+    # APPLY SHIRT MASK
+    ####################################################################
+
+    def apply_shirt_mask(
+            self,
+            person_image,
+            shirt_mask,
+            prepared_fabric
+    ):
+        """
+        Apply the shirt mask to the prepared fabric.
+
+        Purpose
+        -------
+        This function copies the fabric only inside the detected
+        shirt region.
+
+        Everything outside the shirt remains exactly the same.
+
+        NOTE
+        ----
+        This milestone does NOT preserve lighting or folds.
+        That will be implemented in the next milestone.
+        """
+
+        # --------------------------------------------------------------
+        # Convert the SAM mask into a binary mask.
+        #
+        # Background = 0
+        # Shirt = 255
+        # --------------------------------------------------------------
+        binary_mask = (shirt_mask > 0).astype("uint8") * 255
+
+        # --------------------------------------------------------------
+        # Convert the single-channel mask into a 3-channel mask.
+        #
+        # Person Image : (H, W, 3)
+        # Fabric Image : (H, W, 3)
+        # Mask         : (H, W)
+        #
+        # We need:
+        # Mask         : (H, W, 3)
+        # --------------------------------------------------------------
+        binary_mask = cv2.merge([
+            binary_mask,
+            binary_mask,
+            binary_mask
+        ])
+
+        # --------------------------------------------------------------
+        # Copy the original image.
+        #
+        # We never modify the original image directly.
+        # --------------------------------------------------------------
+        output = person_image.copy()
+
+        # --------------------------------------------------------------
+        # Wherever the shirt mask is white,
+        # replace those pixels with the prepared fabric.
+        # --------------------------------------------------------------
+        output[binary_mask == 255] = prepared_fabric[binary_mask == 255]
+
+        return output
+
+    ####################################################################
+    # COMPLETE FABRIC RENDER
+    ####################################################################
+
+    def render(
+            self,
+            person_image,
+            shirt_mask,
+            fabric_image,
+            use_tiling=True
+    ):
+        """
+        Complete fabric rendering pipeline.
+
+        Current Pipeline
+        ----------------
+        1. Validate inputs.
+        2. Prepare fabric.
+        3. Apply shirt mask.
+        4. Return output image.
+
+        Lighting preservation will be added in the next milestone.
+        """
+
+        prepared_fabric = self.prepare_fabric(
+            person_image,
+            shirt_mask,
+            fabric_image,
+            use_tiling
+        )
+
+        output = self.apply_shirt_mask(
+            person_image,
+            shirt_mask,
+            prepared_fabric
+        )
+
+        return output
