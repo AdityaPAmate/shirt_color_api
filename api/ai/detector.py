@@ -37,20 +37,11 @@ class ShirtDetector:
 
         # Configuration file
         config_path = (
-            BASE_DIR
-            / "ai_models"
-            / "grounding_dino"
-            / "configs"
-            / "GroundingDINO_SwinT_OGC.py"
+            BASE_DIR/ "ai_models"/ "grounding_dino"/ "configs"/ "GroundingDINO_SwinT_OGC.py"
         )
 
         # Model checkpoint
-        checkpoint_path = (
-            BASE_DIR
-            / "ai_models"
-            / "grounding_dino"
-            / "checkpoints"
-            / "groundingdino_swint_ogc.pth"
+        checkpoint_path = (BASE_DIR/ "ai_models"/ "grounding_dino"/ "checkpoints"/ "groundingdino_swint_ogc.pth"
         )
 
         # Device
