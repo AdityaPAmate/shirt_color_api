@@ -18,7 +18,7 @@ Next Milestone:
 
 import cv2
 import numpy as np
-
+from api.ai.virtual_fabric import VirtualFabric
 
 class FabricRenderer:
     """
@@ -38,12 +38,16 @@ class FabricRenderer:
 
     def __init__(self):
         """
-        Constructor.
+        Initialize helper classes.
 
-        No AI models are loaded here because fabric preparation
-        only uses OpenCV and NumPy.
+        Currently we only initialize the
+        Virtual Fabric generator.
+
+        In future more helper classes
+        will be initialized here.
         """
-        pass
+
+        self.virtual_fabric = VirtualFabric()
 
     ####################################################################
     # INPUT VALIDATION
@@ -236,73 +240,35 @@ class FabricRenderer:
     ####################################################################
 
     def prepare_fabric(
-        self,
-        person_image,
-        shirt_mask,
-        fabric_image,
-        fabric_mode="tile"
+            self,
+            fabric_image,
+            target_width,
+            target_height,
+            repeat_size=None
     ):
         """
-        Prepare the uploaded fabric.
+        Prepare the fabric before rendering.
 
-        Steps
-        -----
-        1. Validate all inputs.
-        2. Get the output size.
-        3. Resize OR tile the fabric.
-        4. Return the prepared fabric.
+        Current Architecture
+        --------------------
 
-        NOTE:
-        This function DOES NOT apply the shirt mask yet.
-        That will be implemented in the next milestone.
+        This function no longer performs resizing
+        or tiling itself.
+
+        It delegates the work to the
+        VirtualFabric class.
+
+        This keeps the renderer focused only on
+        rendering while VirtualFabric becomes
+        responsible for cloth generation.
         """
 
-        # Validate every input before processing.
-        self.validate_inputs(
-            person_image,
-            shirt_mask,
-            fabric_image
+        return self.virtual_fabric.generate(
+            fabric_image=fabric_image,
+            target_width=target_width,
+            target_height=target_height,
+            repeat_size=repeat_size
         )
-
-        # Read the target image size.
-        height, width = person_image.shape[:2]
-
-        # Decide whether to tile the fabric or simply stretch it.
-        # ----------------------------------------------------------
-        # Prepare fabric according to the selected mode.
-        # ----------------------------------------------------------
-
-        if fabric_mode == "tile":
-
-            prepared_fabric = self.tile_fabric(
-                fabric_image,
-                height,
-                width
-            )
-
-        elif fabric_mode == "fit":
-
-            prepared_fabric = self.resize_fabric(
-                fabric_image,
-                height,
-                width
-            )
-
-        elif fabric_mode == "cover":
-
-            prepared_fabric = self.cover_fabric(
-                fabric_image,
-                height,
-                width
-            )
-
-        else:
-
-            raise ValueError(
-                f"Unknown fabric mode : {fabric_mode}"
-            )
-
-        return prepared_fabric
 
     ####################################################################
     # PRESERVE ORIGINAL SHIRT LIGHTING
@@ -728,10 +694,10 @@ class FabricRenderer:
 
         # Step 1
         prepared_fabric = self.prepare_fabric(
-            person_image,
-            shirt_mask,
-            fabric_image,
-            fabric_mode
+            fabric_image=fabric_image,
+            target_width=person_image.shape[1],
+            target_height=person_image.shape[0],
+            repeat_size=None
         )
 
         # Step 2
