@@ -20,11 +20,11 @@ print(BASE_DIR)
 # Input Files
 # ----------------------------------------------------------
 
-PERSON_IMAGE = f"{BASE_DIR}/test_images/person6.jpeg"
+PERSON_IMAGE = f"{BASE_DIR}/test_images/person3.jpg"
 
-FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/neon_pink_fabric.jpg"
+FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/rb_checks_fabric.jpg"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/test_images/fabric_output_p62.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/test_images/fabric_output_p142_fit.jpg"
 
 # ----------------------------------------------------------
 # Initialize Pipeline
@@ -40,7 +40,7 @@ pipeline.replace_fabric(
     person_image_path=PERSON_IMAGE,
     fabric_image_path=FABRIC_IMAGE,
     output_path=OUTPUT_IMAGE,
-    use_tiling=True
+    fabric_mode="fit"
 )
 
 print("\nTesting Completed Successfully.")

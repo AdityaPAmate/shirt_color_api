@@ -126,6 +126,69 @@ class FabricRenderer:
         return resized
 
     ####################################################################
+    # COVER FABRIC
+    ####################################################################
+
+    def cover_fabric(
+            self,
+            fabric_image,
+            target_height,
+            target_width
+    ):
+        """
+        Resize the fabric while keeping its original aspect ratio.
+
+        If the resized fabric becomes larger than the required size,
+        crop the center portion.
+
+        This works well for:
+
+        - Printed fabrics
+        - Large check designs
+        - Floral patterns
+        - Fabric photos
+
+        Unlike tiling, this method does not repeat the pattern.
+        """
+
+        fabric_height, fabric_width = fabric_image.shape[:2]
+
+        # ----------------------------------------------------------
+        # Calculate scaling factor.
+        #
+        # We choose the larger scale so the entire shirt area is
+        # covered.
+        # ----------------------------------------------------------
+
+        scale = max(
+            target_width / fabric_width,
+            target_height / fabric_height
+        )
+
+        new_width = int(fabric_width * scale)
+        new_height = int(fabric_height * scale)
+
+        resized = cv2.resize(
+            fabric_image,
+            (new_width, new_height),
+            interpolation=cv2.INTER_LINEAR
+        )
+
+        # ----------------------------------------------------------
+        # Crop from the center.
+        # ----------------------------------------------------------
+
+        start_x = (new_width - target_width) // 2
+        start_y = (new_height - target_height) // 2
+
+        cropped = resized[
+                  start_y:start_y + target_height,
+                  start_x:start_x + target_width
+                  ]
+
+        return cropped
+
+    ####################################################################
     # TILE FABRIC
     ####################################################################
 
@@ -177,7 +240,7 @@ class FabricRenderer:
         person_image,
         shirt_mask,
         fabric_image,
-        use_tiling=True
+        fabric_mode="tile"
     ):
         """
         Prepare the uploaded fabric.
@@ -205,17 +268,38 @@ class FabricRenderer:
         height, width = person_image.shape[:2]
 
         # Decide whether to tile the fabric or simply stretch it.
-        if use_tiling:
+        # ----------------------------------------------------------
+        # Prepare fabric according to the selected mode.
+        # ----------------------------------------------------------
+
+        if fabric_mode == "tile":
+
             prepared_fabric = self.tile_fabric(
                 fabric_image,
                 height,
                 width
             )
-        else:
+
+        elif fabric_mode == "fit":
+
             prepared_fabric = self.resize_fabric(
                 fabric_image,
                 height,
                 width
+            )
+
+        elif fabric_mode == "cover":
+
+            prepared_fabric = self.cover_fabric(
+                fabric_image,
+                height,
+                width
+            )
+
+        else:
+
+            raise ValueError(
+                f"Unknown fabric mode : {fabric_mode}"
             )
 
         return prepared_fabric
@@ -337,6 +421,225 @@ class FabricRenderer:
         return result
 
     ####################################################################
+    # EXTRACT STRUCTURE MAP
+    ####################################################################
+
+    def extract_structure_map(
+            self,
+            person_image,
+            shirt_mask
+    ):
+        """
+        Extract only the large structural information from the shirt.
+
+        This function intentionally ignores most of the fabric texture.
+
+        Goal
+        ----
+        Keep
+
+        - folds
+        - sleeve edges
+        - collar folds
+        - button shadows
+        - shirt placket
+
+        Ignore
+
+        - checks
+        - stripes
+        - original fabric print
+        """
+
+        # ----------------------------------------------------------
+        # Convert image to grayscale.
+        # ----------------------------------------------------------
+
+        gray = cv2.cvtColor(
+            person_image,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        # ----------------------------------------------------------
+        # Remove everything outside the shirt.
+        # ----------------------------------------------------------
+
+        gray = cv2.bitwise_and(
+            gray,
+            gray,
+            mask=shirt_mask.astype(np.uint8)
+        )
+
+        # ----------------------------------------------------------
+        # Large blur.
+        #
+        # This keeps only large lighting information.
+        # ----------------------------------------------------------
+
+        blur = cv2.GaussianBlur(
+            gray,
+            (31, 31),
+            0
+        )
+
+        # ----------------------------------------------------------
+        # Local contrast.
+        #
+        # Wrinkles and seams become visible.
+        # Repeated fabric patterns become much weaker.
+        # ----------------------------------------------------------
+
+        structure = cv2.subtract(
+            gray,
+            blur
+        )
+
+        # ----------------------------------------------------------
+        # Normalize result.
+        # ----------------------------------------------------------
+
+        structure = cv2.normalize(
+            structure,
+            None,
+            0,
+            255,
+            cv2.NORM_MINMAX
+        )
+
+        return structure
+
+    ####################################################################
+    # APPLY STRUCTURE MAP
+    ####################################################################
+
+    def apply_structure_map(
+            self,
+            fabric_image,
+            structure_map,
+            strength=0.20
+    ):
+        """
+        Add only a small amount of structural information.
+
+        The structure map is blended with low opacity so the
+        original shirt pattern is not recreated.
+        """
+
+        structure = cv2.cvtColor(
+            structure_map,
+            cv2.COLOR_GRAY2BGR
+        ).astype(np.float32)
+
+        fabric = fabric_image.astype(np.float32)
+
+        structure = structure / 255.0
+
+        result = fabric * (
+                1.0 + strength * structure
+        )
+
+        result = np.clip(
+            result,
+            0,
+            255
+        ).astype(np.uint8)
+
+        return result
+
+    ####################################################################
+    # EXTRACT HIGH FREQUENCY DETAILS
+    ####################################################################
+
+    def extract_detail_layer(
+            self,
+            person_image
+    ):
+        """
+        Extract fine details from the original shirt.
+
+        Examples of details:
+
+        - Buttons
+        - Collar edges
+        - Sleeve fold edges
+        - Shirt stitching
+        - Wrinkles
+        - Pocket edges
+
+        This function removes the smooth lighting component and
+        keeps only the fine structures.
+        """
+
+        # ----------------------------------------------------------
+        # Convert image to float.
+        # Float calculations avoid clipping during subtraction.
+        # ----------------------------------------------------------
+
+        image = person_image.astype(np.float32)
+
+        # ----------------------------------------------------------
+        # Create a blurred version of the image.
+        #
+        # The blur represents the low-frequency information
+        # (lighting and smooth colour transitions).
+        # ----------------------------------------------------------
+
+        blurred = cv2.GaussianBlur(
+            image,
+            (21, 21),
+            0
+        )
+
+        # ----------------------------------------------------------
+        # High-frequency details are obtained by subtracting the
+        # blurred image from the original image.
+        # ----------------------------------------------------------
+
+        detail = image - blurred
+
+        return detail
+
+    ####################################################################
+    # APPLY DETAIL LAYER
+    ####################################################################
+
+    def apply_detail_layer(
+            self,
+            fabric_image,
+            detail_layer,
+            strength=1.0
+    ):
+        """
+        Overlay the extracted detail layer onto the rendered fabric.
+
+        Parameters
+        ----------
+        fabric_image : numpy.ndarray
+            Fabric after lighting preservation.
+
+        detail_layer : numpy.ndarray
+            Fine details extracted from the original shirt.
+
+        strength : float
+            Controls how much detail is added back.
+            1.0 = original strength
+            0.5 = softer
+            1.5 = stronger
+        """
+
+        fabric = fabric_image.astype(np.float32)
+
+        result = fabric + detail_layer * strength
+
+        result = np.clip(
+            result,
+            0,
+            255
+        ).astype(np.uint8)
+
+        return result
+
+    ####################################################################
     # APPLY SHIRT MASK
     ####################################################################
 
@@ -410,7 +713,7 @@ class FabricRenderer:
             person_image,
             shirt_mask,
             fabric_image,
-            use_tiling=True
+            fabric_mode="tile"
     ):
         """
         Complete fabric rendering pipeline.
@@ -428,16 +731,46 @@ class FabricRenderer:
             person_image,
             shirt_mask,
             fabric_image,
-            use_tiling
+            fabric_mode
         )
 
         # Step 2
+        # ----------------------------------------------------------
+        # Preserve overall lighting.
+        # ----------------------------------------------------------
+
         realistic_fabric = self.preserve_lighting(
             person_image,
             prepared_fabric
         )
 
-        # Step 3
+        # ----------------------------------------------------------
+        # Extract fine details from the original shirt.
+        # ----------------------------------------------------------
+
+        # ----------------------------------------------------------
+        # Extract shirt structure.
+        # ----------------------------------------------------------
+
+        structure_map = self.extract_structure_map(
+            person_image,
+            shirt_mask
+        )
+
+        # ----------------------------------------------------------
+        # Blend the structure into the new fabric.
+        # ----------------------------------------------------------
+
+        realistic_fabric = self.apply_structure_map(
+            realistic_fabric,
+            structure_map,
+            strength=0.20
+        )
+
+        # ----------------------------------------------------------
+        # Replace only the shirt region.
+        # ----------------------------------------------------------
+
         output = self.apply_shirt_mask(
             person_image,
             shirt_mask,

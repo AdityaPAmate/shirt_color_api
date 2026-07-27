@@ -87,7 +87,7 @@ class ShirtPipeline:
         person_image_path,
         fabric_image_path,
         output_path,
-        use_tiling=True
+        fabric_mode="tile"
     ):
         """
         Complete fabric replacement pipeline.
@@ -177,7 +177,7 @@ class ShirtPipeline:
             person_image=person_image,
             shirt_mask=shirt_mask,
             fabric_image=fabric_image,
-            use_tiling=use_tiling
+            fabric_mode=fabric_mode
         )
 
         print("Fabric Rendering Completed")
