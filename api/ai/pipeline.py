@@ -29,6 +29,7 @@ import cv2
 from api.ai.detector import ShirtDetector
 from api.ai.segmenter import ShirtSegmenter
 from api.ai.fabric import FabricRenderer
+from api.ai.fabric_analyzer import FabricAnalyzer
 
 
 class ShirtPipeline:
@@ -73,7 +74,19 @@ class ShirtPipeline:
         print("\nLoading AI Models...")
 
         self.detector = ShirtDetector()
+
         self.segmenter = ShirtSegmenter()
+
+        # ----------------------------------------------------------
+        # Analyze the uploaded fabric.
+        # This class only studies the fabric.
+        # It does not modify any image.
+        # ----------------------------------------------------------
+        self.fabric_analyzer = FabricAnalyzer()
+
+        # ----------------------------------------------------------
+        # Responsible for rendering the fabric onto the shirt.
+        # ----------------------------------------------------------
         self.fabric_renderer = FabricRenderer()
 
         print("All AI Models Loaded Successfully.")
@@ -153,6 +166,28 @@ class ShirtPipeline:
         person_image = cv2.imread(person_image_path)
 
         fabric_image = cv2.imread(fabric_image_path)
+
+        # ----------------------------------------------------------
+        # Analyse the uploaded fabric.
+        #
+        # The returned information will be used in future milestones
+        # such as:
+        #
+        # - Virtual Fabric
+        # - Panel Cutting
+        # - Panel Warping
+        # ----------------------------------------------------------
+
+        fabric_info = self.fabric_analyzer.analyze(
+            fabric_image
+        )
+
+        print("\n========== Fabric Information ==========")
+
+        for key, value in fabric_info.items():
+            print(f"{key} : {value}")
+
+        print("========================================\n")
 
         if person_image is None:
             raise ValueError(

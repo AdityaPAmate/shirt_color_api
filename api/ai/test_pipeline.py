@@ -22,9 +22,9 @@ print(BASE_DIR)
 
 PERSON_IMAGE = f"{BASE_DIR}/test_images/person3.jpg"
 
-FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/rb_checks_fabric.jpg"
+FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/checks0_fabric.jpg"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/test_images/fabric_output_p142_fit.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/test_images/fabric_output_p311_fit.jpg"
 
 # ----------------------------------------------------------
 # Initialize Pipeline
