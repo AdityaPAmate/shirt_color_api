@@ -182,6 +182,9 @@ class ShirtPipeline:
             fabric_image
         )
 
+        # Use the normalized fabric returned by FabricAnalyzer
+        fabric_image = fabric_info["normalized_fabric"]
+
         print("\n========== Fabric Information ==========")
 
         for key, value in fabric_info.items():

@@ -68,6 +68,89 @@ class FabricAnalyzer:
         pass
 
     ####################################################################
+    # NORMALIZE FABRIC
+    ####################################################################
+
+    def normalize_fabric(
+            self,
+            fabric_image
+    ):
+        """
+        Normalize the uploaded fabric.
+
+        Goal
+        ----
+        Different users capture fabric from different
+        distances and lighting conditions.
+
+        This function prepares the fabric before it is
+        converted into a virtual cloth.
+
+        Current Version
+
+        ✔ Remove lighting variation
+
+        ✔ Improve contrast
+
+        ✔ Keep original colours
+
+        ✔ Reduce camera noise
+
+        Future
+
+        • Perspective correction
+
+        • Pattern alignment
+
+        • Cloth rectification
+        """
+
+        # ------------------------------------------
+        # Convert to LAB colour space.
+        #
+        # LAB separates brightness from colours.
+        # ------------------------------------------
+
+        lab = cv2.cvtColor(
+            fabric_image,
+            cv2.COLOR_BGR2LAB
+        )
+
+        l, a, b = cv2.split(lab)
+
+        # ------------------------------------------
+        # Improve brightness only.
+        # ------------------------------------------
+
+        clahe = cv2.createCLAHE(
+            clipLimit=2.5,
+            tileGridSize=(8, 8)
+        )
+
+        l = clahe.apply(l)
+
+        lab = cv2.merge((l, a, b))
+
+        normalized = cv2.cvtColor(
+            lab,
+            cv2.COLOR_LAB2BGR
+        )
+
+        # ------------------------------------------
+        # Small denoising.
+        # ------------------------------------------
+
+        normalized = cv2.fastNlMeansDenoisingColored(
+            normalized,
+            None,
+            3,
+            3,
+            7,
+            21
+        )
+
+        return normalized
+    ####################################################################
     # ANALYSE FABRIC
     ####################################################################
 
@@ -93,6 +176,15 @@ class FabricAnalyzer:
 
         if fabric_image is None:
             raise ValueError("Fabric image is None.")
+
+        # ----------------------------------------------------------
+        # Normalize the uploaded fabric before extracting
+        # any information from it.
+        # ----------------------------------------------------------
+
+        fabric_image = self.normalize_fabric(
+            fabric_image
+        )
 
         # ----------------------------------------------------------
         # Image Size
@@ -125,6 +217,8 @@ class FabricAnalyzer:
         # ----------------------------------------------------------
 
         return {
+
+            "normalized_fabric": fabric_image,
 
             "height": height,
 
@@ -248,17 +342,26 @@ class FabricAnalyzer:
     # DETECT PATTERN REPEAT
     ####################################################################
 
+    ####################################################################
+    # DETECT PATTERN REPEAT
+    ####################################################################
+
     def detect_pattern_repeat(
             self,
             fabric_image
     ):
         """
-        Estimate the repeating distance of the fabric pattern.
+        Estimate the dominant repeating distance of the fabric pattern.
 
-        Current Version
+        Current Strategy
         ----------------
-        We estimate the repeat using autocorrelation of the
-        grayscale image.
+        1. Convert the image to grayscale.
+        2. Analyse multiple horizontal rows instead of only one row.
+        3. Compute autocorrelation for every selected row.
+        4. Average all autocorrelation curves.
+        5. Ignore very small lag values.
+        6. Detect local peaks.
+        7. Return the largest visually meaningful repeat.
 
         Returns
         -------
@@ -278,57 +381,145 @@ class FabricAnalyzer:
             cv2.COLOR_BGR2GRAY
         )
 
+        height, width = gray.shape
+
         # ----------------------------------------------------------
-        # Take the middle row.
+        # Select multiple rows across the fabric.
         #
-        # This keeps the first implementation simple.
+        # Using multiple rows is much more reliable than analysing
+        # only the centre row.
         # ----------------------------------------------------------
 
-        row = gray[
-            gray.shape[0] // 2
-            ].astype(np.float32)
+        number_of_rows = min(9, height)
 
-        # ----------------------------------------------------------
-        # Remove brightness offset.
-        #
-        # We only want repeating structure.
-        # ----------------------------------------------------------
-
-        row -= np.mean(row)
-
-        # ----------------------------------------------------------
-        # Calculate autocorrelation.
-        # ----------------------------------------------------------
-
-        correlation = np.correlate(
-            row,
-            row,
-            mode="full"
+        row_indices = np.linspace(
+            int(height * 0.10),
+            int(height * 0.90),
+            number_of_rows,
+            dtype=int
         )
 
-        correlation = correlation[
-                      correlation.size // 2:
-                      ]
+        autocorrelations = []
 
         # ----------------------------------------------------------
-        # Ignore the first peak.
-        #
-        # Lag = 0 is always the maximum.
+        # Compute autocorrelation for every selected row.
         # ----------------------------------------------------------
 
-        correlation[0] = 0
+        for row_index in row_indices:
+
+            row = gray[row_index].astype(np.float32)
+
+            # Remove brightness offset.
+            row -= np.mean(row)
+
+            # Skip rows with almost no texture.
+            if np.std(row) < 1:
+                continue
+
+            correlation = np.correlate(
+                row,
+                row,
+                mode="full"
+            )
+
+            correlation = correlation[
+                          correlation.size // 2:
+                          ]
+
+            # Normalise so every row contributes equally.
+            if correlation[0] != 0:
+                correlation = correlation / correlation[0]
+
+            autocorrelations.append(correlation)
 
         # ----------------------------------------------------------
-        # Find strongest remaining peak.
+        # No usable rows.
         # ----------------------------------------------------------
 
-        repeat = np.argmax(correlation)
-
-        # ----------------------------------------------------------
-        # Ignore unrealistic values.
-        # ----------------------------------------------------------
-
-        if repeat < 8:
+        if len(autocorrelations) == 0:
             return None
 
-        return int(repeat)
+        # ----------------------------------------------------------
+        # Average autocorrelation.
+        # ----------------------------------------------------------
+
+        average_correlation = np.mean(
+            autocorrelations,
+            axis=0
+        )
+
+        # ----------------------------------------------------------
+        # Ignore lag zero.
+        # ----------------------------------------------------------
+
+        average_correlation[0] = 0
+
+        # ----------------------------------------------------------
+        # Ignore very small lag values.
+        #
+        # Small lags usually correspond to fine texture rather than
+        # the main fabric pattern.
+        # ----------------------------------------------------------
+
+        minimum_lag = max(8, width // 40)
+
+        average_correlation[:minimum_lag] = 0
+
+        # ----------------------------------------------------------
+        # Detect local peaks.
+        # ----------------------------------------------------------
+
+        peaks = []
+
+        for i in range(
+                minimum_lag,
+                len(average_correlation) - 1
+        ):
+
+            if (
+                    average_correlation[i] >
+                    average_correlation[i - 1]
+                    and
+                    average_correlation[i] >
+                    average_correlation[i + 1]
+            ):
+                peaks.append(i)
+
+        # ----------------------------------------------------------
+        # No peaks found.
+        # ----------------------------------------------------------
+
+        if len(peaks) == 0:
+            return None
+
+        # ----------------------------------------------------------
+        # Keep only significant peaks.
+        #
+        # A peak must be at least 30% of the strongest peak.
+        # ----------------------------------------------------------
+
+        peak_values = [
+            average_correlation[p]
+            for p in peaks
+        ]
+
+        strongest_peak = max(peak_values)
+
+        significant_peaks = [
+
+            p
+
+            for p in peaks
+
+            if average_correlation[p] >= strongest_peak * 0.30
+
+        ]
+
+        if len(significant_peaks) == 0:
+            return None
+
+        # ----------------------------------------------------------
+        # Return the largest visually meaningful repeat.
+        # ----------------------------------------------------------
+
+        return int(max(significant_peaks))
