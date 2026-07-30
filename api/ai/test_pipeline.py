@@ -9,6 +9,7 @@ All AI logic is handled inside:
 """
 
 from api.ai.pipeline import ShirtPipeline
+from api.ai.quilting.patch_extractor import PatchExtractor
 
 
 from pathlib import Path
@@ -36,11 +37,29 @@ pipeline = ShirtPipeline()
 # Run Complete Fabric Replacement Pipeline
 # ----------------------------------------------------------
 
-pipeline.replace_fabric(
-    person_image_path=PERSON_IMAGE,
-    fabric_image_path=FABRIC_IMAGE,
-    output_path=OUTPUT_IMAGE,
-    fabric_mode="fit"
+extractor = PatchExtractor()
+
+locations = extractor.get_candidate_locations(
+    FABRIC_IMAGE,
+    patch_size=64
 )
+
+print(len(locations))
+
+patch = extractor.extract_patch(
+    FABRIC_IMAGE,
+    locations[0][0],
+    locations[0][1],
+    64
+)
+
+print(patch.shape)
+
+# pipeline.replace_fabric(
+#     person_image_path=PERSON_IMAGE,
+#     fabric_image_path=FABRIC_IMAGE,
+#     output_path=OUTPUT_IMAGE,
+#     fabric_mode="fit"
+# )
 
 print("\nTesting Completed Successfully.")
