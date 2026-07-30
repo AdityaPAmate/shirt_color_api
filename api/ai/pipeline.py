@@ -30,6 +30,7 @@ from api.ai.detector import ShirtDetector
 from api.ai.segmenter import ShirtSegmenter
 from api.ai.fabric import FabricRenderer
 from api.ai.fabric_analyzer import FabricAnalyzer
+from api.ai.pattern_scale_estimator import PatternScaleEstimator
 
 
 class ShirtPipeline:
@@ -83,6 +84,8 @@ class ShirtPipeline:
         # It does not modify any image.
         # ----------------------------------------------------------
         self.fabric_analyzer = FabricAnalyzer()
+
+        self.pattern_scale_estimator = PatternScaleEstimator()
 
         # ----------------------------------------------------------
         # Responsible for rendering the fabric onto the shirt.
@@ -182,6 +185,24 @@ class ShirtPipeline:
             fabric_image
         )
 
+        # ----------------------------------------------------------
+        # Estimate pattern scale.
+        #
+        # Current version only prepares the architecture.
+        # ----------------------------------------------------------
+        print(fabric_info["pattern_repeat"])
+
+        scale_info = self.pattern_scale_estimator.estimate(
+            fabric_info
+        )
+
+        print("\n========== Pattern Scale ==========")
+
+        for key, value in scale_info.items():
+            print(f"{key} : {value}")
+
+        print("===================================\n")
+
         # Use the normalized fabric returned by FabricAnalyzer
         fabric_image = fabric_info["normalized_fabric"]
 
@@ -214,7 +235,7 @@ class ShirtPipeline:
         result = self.fabric_renderer.render(
             person_image=person_image,
             shirt_mask=shirt_mask,
-            fabric_image=fabric_image,
+            fabric_info=fabric_info,
             fabric_mode=fabric_mode
         )
 

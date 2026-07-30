@@ -678,7 +678,7 @@ class FabricRenderer:
             self,
             person_image,
             shirt_mask,
-            fabric_image,
+            fabric_info,
             fabric_mode="tile"
     ):
         """
@@ -691,13 +691,20 @@ class FabricRenderer:
         3. Preserve original lighting.
         4. Apply shirt mask.
         """
+        # ----------------------------------------------------------
+        # Extract analyzed fabric information.
+        # ----------------------------------------------------------
+
+        fabric_image = fabric_info["normalized_fabric"]
+
+        pattern_repeat = fabric_info["pattern_repeat"]
 
         # Step 1
         prepared_fabric = self.prepare_fabric(
             fabric_image=fabric_image,
             target_width=person_image.shape[1],
             target_height=person_image.shape[0],
-            repeat_size=None
+            repeat_size=pattern_repeat
         )
 
         # Step 2

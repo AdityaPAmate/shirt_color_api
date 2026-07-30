@@ -216,6 +216,13 @@ class FabricAnalyzer:
         # Return analysed information.
         # ----------------------------------------------------------
 
+        has_pattern = self.has_repeating_pattern(fabric_image)
+
+        pattern_repeat = None
+
+        if has_pattern:
+            pattern_repeat = self.detect_pattern_repeat(fabric_image)
+
         return {
 
             "normalized_fabric": fabric_image,
@@ -236,7 +243,9 @@ class FabricAnalyzer:
 
             "pattern_scale": None,
 
-            "pattern_repeat": self.detect_pattern_repeat(fabric_image),
+            "has_pattern": has_pattern,
+
+            "pattern_repeat": pattern_repeat,
 
             "pattern_direction":  self.detect_pattern_direction(fabric_image),
 
@@ -346,6 +355,10 @@ class FabricAnalyzer:
     # DETECT PATTERN REPEAT
     ####################################################################
 
+    ####################################################################
+    # DETECT PATTERN REPEAT
+    ####################################################################
+
     def detect_pattern_repeat(
             self,
             fabric_image
@@ -353,68 +366,40 @@ class FabricAnalyzer:
         """
         Estimate the dominant repeating distance of the fabric pattern.
 
-        Current Strategy
+        Current Version
         ----------------
-        1. Convert the image to grayscale.
-        2. Analyse multiple horizontal rows instead of only one row.
-        3. Compute autocorrelation for every selected row.
-        4. Average all autocorrelation curves.
-        5. Ignore very small lag values.
-        6. Detect local peaks.
-        7. Return the largest visually meaningful repeat.
-
-        Returns
-        -------
-        int
-
-            Estimated repeat distance in pixels.
-
-        Returns None if no reliable repeat is detected.
+        Uses averaged autocorrelation across multiple rows instead
+        of only the middle row.
         """
-
-        # ----------------------------------------------------------
-        # Convert image to grayscale.
-        # ----------------------------------------------------------
 
         gray = cv2.cvtColor(
             fabric_image,
             cv2.COLOR_BGR2GRAY
         )
 
+        gray = gray.astype(np.float32)
+
         height, width = gray.shape
 
         # ----------------------------------------------------------
-        # Select multiple rows across the fabric.
-        #
-        # Using multiple rows is much more reliable than analysing
-        # only the centre row.
+        # Sample multiple rows.
         # ----------------------------------------------------------
 
-        number_of_rows = min(9, height)
-
-        row_indices = np.linspace(
-            int(height * 0.10),
-            int(height * 0.90),
-            number_of_rows,
+        sample_rows = np.linspace(
+            int(height * 0.20),
+            int(height * 0.80),
+            9,
             dtype=int
         )
 
-        autocorrelations = []
+        accumulated = np.zeros(width, dtype=np.float32)
 
-        # ----------------------------------------------------------
-        # Compute autocorrelation for every selected row.
-        # ----------------------------------------------------------
+        valid_rows = 0
 
-        for row_index in row_indices:
+        for row_index in sample_rows:
+            row = gray[row_index].copy()
 
-            row = gray[row_index].astype(np.float32)
-
-            # Remove brightness offset.
             row -= np.mean(row)
-
-            # Skip rows with almost no texture.
-            if np.std(row) < 1:
-                continue
 
             correlation = np.correlate(
                 row,
@@ -426,100 +411,103 @@ class FabricAnalyzer:
                           correlation.size // 2:
                           ]
 
-            # Normalise so every row contributes equally.
-            if correlation[0] != 0:
-                correlation = correlation / correlation[0]
+            correlation[0] = 0
 
-            autocorrelations.append(correlation)
+            accumulated += correlation
+
+            valid_rows += 1
+
+        if valid_rows == 0:
+            return None
+
+        correlation = accumulated / valid_rows
 
         # ----------------------------------------------------------
-        # No usable rows.
+        # Reject fabrics with very weak repeating signals.
+        # Plain fabrics should not report a pattern repeat.
         # ----------------------------------------------------------
 
-        if len(autocorrelations) == 0:
+        energy = np.std(gray)
+
+        if energy < 12:
             return None
 
         # ----------------------------------------------------------
-        # Average autocorrelation.
+        # Ignore very small repeats.
         # ----------------------------------------------------------
 
-        average_correlation = np.mean(
-            autocorrelations,
-            axis=0
-        )
+        MIN_REPEAT = 20
+
+        correlation[:MIN_REPEAT] = 0
 
         # ----------------------------------------------------------
-        # Ignore lag zero.
-        # ----------------------------------------------------------
-
-        average_correlation[0] = 0
-
-        # ----------------------------------------------------------
-        # Ignore very small lag values.
-        #
-        # Small lags usually correspond to fine texture rather than
-        # the main fabric pattern.
-        # ----------------------------------------------------------
-
-        minimum_lag = max(8, width // 40)
-
-        average_correlation[:minimum_lag] = 0
-
-        # ----------------------------------------------------------
-        # Detect local peaks.
+        # Find local peaks.
         # ----------------------------------------------------------
 
         peaks = []
 
         for i in range(
-                minimum_lag,
-                len(average_correlation) - 1
+                MIN_REPEAT,
+                len(correlation) - 1
         ):
 
             if (
-                    average_correlation[i] >
-                    average_correlation[i - 1]
+                    correlation[i] > correlation[i - 1]
                     and
-                    average_correlation[i] >
-                    average_correlation[i + 1]
+                    correlation[i] > correlation[i + 1]
+                    and
+                    correlation[i] > (correlation.max() * 0.75)
             ):
                 peaks.append(i)
 
-        # ----------------------------------------------------------
-        # No peaks found.
-        # ----------------------------------------------------------
-
-        if len(peaks) == 0:
+        if not peaks:
             return None
 
         # ----------------------------------------------------------
-        # Keep only significant peaks.
-        #
-        # A peak must be at least 30% of the strongest peak.
+        # Choose the largest significant repeat.
         # ----------------------------------------------------------
 
-        peak_values = [
-            average_correlation[p]
-            for p in peaks
-        ]
+        threshold = correlation.max() * 0.75
 
-        strongest_peak = max(peak_values)
+        significant = sorted(peaks)
 
-        significant_peaks = [
-
-            p
-
-            for p in peaks
-
-            if average_correlation[p] >= strongest_peak * 0.30
-
-        ]
-
-        if len(significant_peaks) == 0:
+        if not significant:
             return None
 
-        # ----------------------------------------------------------
-        # Return the largest visually meaningful repeat.
-        # ----------------------------------------------------------
+        print("Detected Peaks :", significant)
+        print("Selected Repeat :", max(significant))
 
-        return int(max(significant_peaks))
+        if len(significant) < 2:
+            return None
+
+        return int(significant[-1])
+
+    ####################################################################
+    # HAS REPEATING PATTERN
+    ####################################################################
+
+    def has_repeating_pattern(
+            self,
+            fabric_image
+    ):
+        """
+        Returns True if the fabric contains a visible repeating pattern.
+        Returns False for plain or nearly plain fabrics.
+        """
+
+        gray = cv2.cvtColor(
+            fabric_image,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        edges = cv2.Canny(
+            gray,
+            80,
+            160
+        )
+
+        edge_ratio = np.count_nonzero(edges) / edges.size
+
+        print(f"Edge Ratio : {edge_ratio:.4f}")
+
+        return edge_ratio > 0.03
