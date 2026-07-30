@@ -25,11 +25,14 @@ Future versions will also preserve
 import cv2
 import numpy as np
 
+from api.ai.quilting.image_quilter import ImageQuilter
+
 
 class VirtualFabric:
 
     def __init__(self):
-        pass
+
+        self.image_quilter = ImageQuilter()
 
     ####################################################################
     # RESIZE FABRIC BEFORE TILING
@@ -178,8 +181,6 @@ class VirtualFabric:
             fabric_image
         )
 
-        fabric_h, fabric_w = fabric_image.shape[:2]
-
         # ----------------------------------------------------------
         # Future: Pattern-aware scaling.
         #
@@ -201,40 +202,12 @@ class VirtualFabric:
 
             print(f"Detected Pattern Repeat : {repeat_size} pixels")
 
-            
-
-        # ----------------------------------------------------------
-        # Calculate how many repetitions are required.
-        #
-        # We intentionally repeat the ORIGINAL fabric.
-        #
-        # We DO NOT resize it.
-        # ----------------------------------------------------------
-
-        repeat_x = int(np.ceil(target_width / fabric_w)) + 2
-        repeat_y = int(np.ceil(target_height / fabric_h)) + 2
-
-        # ----------------------------------------------------------
-        # Build a large virtual cloth.
-        # ----------------------------------------------------------
-
-        virtual = np.tile(
-            fabric_image,
-            (repeat_y, repeat_x, 1)
+        virtual = self.image_quilter.generate(
+            fabric_image=fabric_image,
+            output_width=target_width,
+            output_height=target_height,
+            patch_size=64,
+            overlap=16
         )
-
-        # ----------------------------------------------------------
-        # Crop only the required size.
-        #
-        # Notice:
-        # We crop.
-        #
-        # We do NOT resize.
-        # ----------------------------------------------------------
-
-        virtual = virtual[
-            0:target_height,
-            0:target_width
-        ]
 
         return virtual

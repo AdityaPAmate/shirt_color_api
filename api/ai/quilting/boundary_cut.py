@@ -2,6 +2,8 @@
 Minimum Error Boundary Cut
 """
 
+import numpy as np
+
 
 class BoundaryCut:
 
@@ -9,41 +11,79 @@ class BoundaryCut:
         pass
 
     ####################################################################
-    # COMPUTE VERTICAL BOUNDARY
+    # COMPUTE VERTICAL SEAM
     ####################################################################
 
-    def compute_vertical_boundary(
+    def compute_vertical_seam(
         self,
-        error_surface
+        error_map
     ):
         """
-        Compute vertical minimum-error seam.
+        Find the minimum-cost vertical seam using Dynamic Programming.
+
+        Parameters
+        ----------
+        error_map : ndarray (H, W)
+
+        Returns
+        -------
+        list[int]
+
+            Column index for each row.
         """
-        raise NotImplementedError
+
+        height, width = error_map.shape
+
+        cost = error_map.astype(np.float32).copy()
+        parent = np.zeros((height, width), dtype=np.int32)
+
+        # Forward DP
+        for y in range(1, height):
+
+            for x in range(width):
+
+                left = max(0, x - 1)
+                right = min(width - 1, x + 1)
+
+                previous = cost[y - 1, left:right + 1]
+
+                offset = np.argmin(previous)
+
+                parent[y, x] = left + offset
+
+                cost[y, x] += previous[offset]
+
+        # Backtrack
+        seam = [0] * height
+
+        seam[-1] = int(np.argmin(cost[-1]))
+
+        for y in range(height - 2, -1, -1):
+            seam[y] = parent[y + 1, seam[y + 1]]
+
+        return seam
 
     ####################################################################
-    # COMPUTE HORIZONTAL BOUNDARY
+    # CREATE SEAM MASK
     ####################################################################
 
-    def compute_horizontal_boundary(
+    def create_mask(
         self,
-        error_surface
+        seam,
+        width
     ):
         """
-        Compute horizontal minimum-error seam.
+        Convert seam into a binary mask.
         """
-        raise NotImplementedError
 
-    ####################################################################
-    # COMPUTE COMBINED MASK
-    ####################################################################
+        height = len(seam)
 
-    def compute_combined_mask(
-        self,
-        vertical_mask,
-        horizontal_mask
-    ):
-        """
-        Combine vertical and horizontal seams.
-        """
-        raise NotImplementedError
+        mask = np.zeros(
+            (height, width),
+            dtype=np.uint8
+        )
+
+        for y, x in enumerate(seam):
+            mask[y, :x] = 1
+
+        return mask
