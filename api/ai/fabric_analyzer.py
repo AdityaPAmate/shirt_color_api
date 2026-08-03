@@ -111,45 +111,47 @@ class FabricAnalyzer:
         # LAB separates brightness from colours.
         # ------------------------------------------
 
-        lab = cv2.cvtColor(
-            fabric_image,
-            cv2.COLOR_BGR2LAB
-        )
+        # lab = cv2.cvtColor(
+        #     fabric_image,
+        #     cv2.COLOR_BGR2LAB
+        # )
+        #
+        # l, a, b = cv2.split(lab)
+        #
+        # # ------------------------------------------
+        # # Improve brightness only.
+        # # ------------------------------------------
+        #
+        # clahe = cv2.createCLAHE(
+        #     clipLimit=2.5,
+        #     tileGridSize=(8, 8)
+        # )
+        #
+        # l = clahe.apply(l)
+        #
+        # lab = cv2.merge((l, a, b))
+        #
+        # normalized = cv2.cvtColor(
+        #     lab,
+        #     cv2.COLOR_LAB2BGR
+        # )
+        #
+        # # ------------------------------------------
+        # # Small denoising.
+        # # ------------------------------------------
+        #
+        # normalized = cv2.fastNlMeansDenoisingColored(
+        #     normalized,
+        #     None,
+        #     3,
+        #     3,
+        #     7,
+        #     21
+        # )
+        #
+        # return normalized
 
-        l, a, b = cv2.split(lab)
-
-        # ------------------------------------------
-        # Improve brightness only.
-        # ------------------------------------------
-
-        clahe = cv2.createCLAHE(
-            clipLimit=2.5,
-            tileGridSize=(8, 8)
-        )
-
-        l = clahe.apply(l)
-
-        lab = cv2.merge((l, a, b))
-
-        normalized = cv2.cvtColor(
-            lab,
-            cv2.COLOR_LAB2BGR
-        )
-
-        # ------------------------------------------
-        # Small denoising.
-        # ------------------------------------------
-
-        normalized = cv2.fastNlMeansDenoisingColored(
-            normalized,
-            None,
-            3,
-            3,
-            7,
-            21
-        )
-
-        return normalized
+        return fabric_image
     ####################################################################
     # ANALYSE FABRIC
     ####################################################################
@@ -182,7 +184,7 @@ class FabricAnalyzer:
         # any information from it.
         # ----------------------------------------------------------
 
-        fabric_image = self.normalize_fabric(
+        normalized_fabric = self.normalize_fabric(
             fabric_image
         )
 
@@ -225,7 +227,8 @@ class FabricAnalyzer:
 
         return {
 
-            "normalized_fabric": fabric_image,
+            "original_fabric": fabric_image,
+            "normalized_fabric": normalized_fabric,
 
             "height": height,
 

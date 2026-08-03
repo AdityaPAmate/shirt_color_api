@@ -204,7 +204,7 @@ class ShirtPipeline:
         print("===================================\n")
 
         # Use the normalized fabric returned by FabricAnalyzer
-        fabric_image = fabric_info["normalized_fabric"]
+        fabric_image = cv2.imread(fabric_image_path)
 
         print("\n========== Fabric Information ==========")
 

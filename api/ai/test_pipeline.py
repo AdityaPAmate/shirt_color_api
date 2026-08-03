@@ -20,11 +20,11 @@ print(BASE_DIR)
 # Input Files
 # ----------------------------------------------------------
 
-PERSON_IMAGE = f"{BASE_DIR}/test_images/person2.jpg"
+PERSON_IMAGE = f"{BASE_DIR}/test_images/person7.jpeg"
 
-FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/plain_green2_fabric.png"
+FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/plain_green5_fabric.png"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/test_images/fabric_output_q291_fit.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/test_images/fabric_output_q2101_fit.jpg"
 
 # ----------------------------------------------------------
 # Initialize Pipeline

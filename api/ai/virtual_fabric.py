@@ -24,15 +24,15 @@ Future versions will also preserve
 
 import cv2
 import numpy as np
+from pathlib import Path
 
-from api.ai.quilting.image_quilter import ImageQuilter
 
 
 class VirtualFabric:
 
     def __init__(self):
 
-        self.image_quilter = ImageQuilter()
+        pass
 
     ####################################################################
     # RESIZE FABRIC BEFORE TILING
@@ -135,79 +135,142 @@ class VirtualFabric:
     # CREATE VIRTUAL FABRIC
     ####################################################################
 
+    # def generate(
+    #     self,
+    #     fabric_image,
+    #     target_width,
+    #     target_height,
+    #     repeat_size=None
+    # ):
+    #     """
+    #     Generate a large virtual fabric.
+    #
+    #     Parameters
+    #     ----------
+    #     fabric_image : ndarray
+    #
+    #     target_width : int
+    #
+    #     target_height : int
+    #
+    #     repeat_size : int
+    #
+    #         Reserved for future improvements.
+    #
+    #     Returns
+    #     -------
+    #     ndarray
+    #     """
+    #
+    #     # ----------------------------------------------------------
+    #     # Temporary V1.
+    #     # Later this value will come from PatternScaleEstimator.
+    #     # ----------------------------------------------------------
+    #
+    #     scale_factor = self.compute_scale_factor(
+    #         fabric_image,
+    #         repeat_size
+    #     )
+    #
+    #     fabric_image = self.resize_for_tiling(
+    #         fabric_image,
+    #         scale_factor
+    #     )
+    #
+    #     fabric_image = self.make_seamless(
+    #         fabric_image
+    #     )
+    #
+    #     # ----------------------------------------------------------
+    #     # Future: Pattern-aware scaling.
+    #     #
+    #     # Currently we only receive the detected repeat size.
+    #     #
+    #     # In future milestones this value will be converted into
+    #     # a scale factor before generating the virtual fabric.
+    #     #
+    #     # For now we simply validate it so the complete pipeline
+    #     # becomes pattern-aware.
+    #     # ----------------------------------------------------------
+    #
+    #     if repeat_size is not None:
+    #
+    #         if repeat_size <= 0:
+    #             raise ValueError(
+    #                 "Pattern repeat must be greater than zero."
+    #             )
+    #
+    #         print(f"Detected Pattern Repeat : {repeat_size} pixels")
+    #
+    #     virtual = self.image_quilter.generate(
+    #         fabric_image=fabric_image,
+    #         output_width=target_width,
+    #         output_height=target_height,
+    #         patch_size=64,
+    #         overlap=16
+    #     )
+    #
+    #     return virtual
+
     def generate(
-        self,
-        fabric_image,
-        target_width,
-        target_height,
-        repeat_size=None
+            self,
+            fabric_image,
+            target_width,
+            target_height,
+            repeat_size=None
     ):
         """
-        Generate a large virtual fabric.
+        Prepare the fabric for rendering without changing its texture.
 
-        Parameters
-        ----------
-        fabric_image : ndarray
+        Strategy
+        --------
+        - Never resize.
+        - Never tile.
+        - Never quilt.
+        - Simply crop the center region.
 
-        target_width : int
-
-        target_height : int
-
-        repeat_size : int
-
-            Reserved for future improvements.
-
-        Returns
-        -------
-        ndarray
+        This preserves the original weave, colour and texture exactly.
         """
 
+        fabric_height, fabric_width = fabric_image.shape[:2]
+
         # ----------------------------------------------------------
-        # Temporary V1.
-        # Later this value will come from PatternScaleEstimator.
+        # Validate size
         # ----------------------------------------------------------
+        if fabric_height < target_height or fabric_width < target_width:
+            raise ValueError(
+                f"Fabric image is too small.\n"
+                f"Fabric : ({fabric_width} x {fabric_height})\n"
+                f"Required: ({target_width} x {target_height})"
+            )
 
-        scale_factor = self.compute_scale_factor(
-            fabric_image,
-            repeat_size
-        )
+        # ----------------------------------------------------------
+        # Crop from center
+        # ----------------------------------------------------------
+        start_x = (fabric_width - target_width) // 2
+        start_y = (fabric_height - target_height) // 2
 
-        fabric_image = self.resize_for_tiling(
-            fabric_image,
-            scale_factor
-        )
+        BASE_DIR = Path(__file__).resolve().parents[2]
 
-        fabric_image = self.make_seamless(
+        DEBUG_FOLDER = BASE_DIR / "test_images" / "debug"
+
+        DEBUG_FOLDER.mkdir(parents=True, exist_ok=True)
+
+        cv2.imwrite(
+            str(DEBUG_FOLDER / "debug0_before_croped.png"),
             fabric_image
         )
 
-        # ----------------------------------------------------------
-        # Future: Pattern-aware scaling.
-        #
-        # Currently we only receive the detected repeat size.
-        #
-        # In future milestones this value will be converted into
-        # a scale factor before generating the virtual fabric.
-        #
-        # For now we simply validate it so the complete pipeline
-        # becomes pattern-aware.
-        # ----------------------------------------------------------
 
-        if repeat_size is not None:
+        cropped = fabric_image[
+                  start_y:start_y + target_height,
+                  start_x:start_x + target_width
+                  ]
 
-            if repeat_size <= 0:
-                raise ValueError(
-                    "Pattern repeat must be greater than zero."
-                )
 
-            print(f"Detected Pattern Repeat : {repeat_size} pixels")
-
-        virtual = self.image_quilter.generate(
-            fabric_image=fabric_image,
-            output_width=target_width,
-            output_height=target_height,
-            patch_size=64,
-            overlap=16
+        cv2.imwrite(
+            str(DEBUG_FOLDER / "debug_3_croped.png"),
+            cropped
         )
 
-        return virtual
+        return cropped
