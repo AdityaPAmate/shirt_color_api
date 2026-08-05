@@ -13,13 +13,36 @@ Important
 We DO NOT stretch the uploaded fabric.
 
 Instead, we preserve the original pattern scale and
-generate a larger piece of cloth.
+generate a larger piece of cloth by tiling it.
 
-Future versions will also preserve
+CHANGELOG
+---------
+NEW: generate() completely rewritten.
 
-- repeat alignment
-- fabric orientation
-- garment panels
+     Old version #1 (active) only center-cropped the fabric and
+     never actually tiled it -> caused stretching/incorrect sizing
+     whenever fabric_info["original_fabric"] size did not already
+     match the person image.
+
+     Old version #2 (commented out) called self.image_quilter,
+     which was never created in __init__ -> would have crashed
+     if it were ever un-commented.
+
+     New version performs PERIOD-ALIGNED SEAMLESS TILING:
+       1. Scale the fabric so the pattern size looks right on
+          the shirt (reuses existing compute_scale_factor /
+          resize_for_tiling logic).
+       2. Crop the fabric down to an exact whole-number multiple
+          of the detected pattern repeat (both X and Y), so the
+          tile boundary always falls in the "empty" background
+          area of the pattern instead of cutting a flower/check
+          in half. This is what removes the visible seam lines.
+       3. np.tile() the cropped block until it covers the full
+          target canvas, then crop to exact size.
+
+REMOVED: make_seamless() (np.roll offset trick). It only *moved*
+         the seam to the center of the image, it never removed it.
+         Period-aligned cropping (step 2 above) makes it unnecessary.
 """
 
 import cv2
@@ -27,11 +50,9 @@ import numpy as np
 from pathlib import Path
 
 
-
 class VirtualFabric:
 
     def __init__(self):
-
         pass
 
     ####################################################################
@@ -107,170 +128,138 @@ class VirtualFabric:
         return 1.0
 
     ####################################################################
-    # CREATE SEAMLESS FABRIC
+    # CREATE VIRTUAL FABRIC (Period-aligned seamless tiling)
     ####################################################################
-
-    def make_seamless(
-            self,
-            fabric_image
-    ):
-        """
-        Reduce visible tile boundaries before creating
-        the virtual cloth.
-        """
-
-        h, w = fabric_image.shape[:2]
-
-        offset_x = w // 2
-        offset_y = h // 2
-
-        shifted = np.roll(
-            fabric_image,
-            shift=(-offset_y, -offset_x),
-            axis=(0, 1)
-        )
-
-        return shifted
-    ####################################################################
-    # CREATE VIRTUAL FABRIC
-    ####################################################################
-
-    # def generate(
-    #     self,
-    #     fabric_image,
-    #     target_width,
-    #     target_height,
-    #     repeat_size=None
-    # ):
-    #     """
-    #     Generate a large virtual fabric.
-    #
-    #     Parameters
-    #     ----------
-    #     fabric_image : ndarray
-    #
-    #     target_width : int
-    #
-    #     target_height : int
-    #
-    #     repeat_size : int
-    #
-    #         Reserved for future improvements.
-    #
-    #     Returns
-    #     -------
-    #     ndarray
-    #     """
-    #
-    #     # ----------------------------------------------------------
-    #     # Temporary V1.
-    #     # Later this value will come from PatternScaleEstimator.
-    #     # ----------------------------------------------------------
-    #
-    #     scale_factor = self.compute_scale_factor(
-    #         fabric_image,
-    #         repeat_size
-    #     )
-    #
-    #     fabric_image = self.resize_for_tiling(
-    #         fabric_image,
-    #         scale_factor
-    #     )
-    #
-    #     fabric_image = self.make_seamless(
-    #         fabric_image
-    #     )
-    #
-    #     # ----------------------------------------------------------
-    #     # Future: Pattern-aware scaling.
-    #     #
-    #     # Currently we only receive the detected repeat size.
-    #     #
-    #     # In future milestones this value will be converted into
-    #     # a scale factor before generating the virtual fabric.
-    #     #
-    #     # For now we simply validate it so the complete pipeline
-    #     # becomes pattern-aware.
-    #     # ----------------------------------------------------------
-    #
-    #     if repeat_size is not None:
-    #
-    #         if repeat_size <= 0:
-    #             raise ValueError(
-    #                 "Pattern repeat must be greater than zero."
-    #             )
-    #
-    #         print(f"Detected Pattern Repeat : {repeat_size} pixels")
-    #
-    #     virtual = self.image_quilter.generate(
-    #         fabric_image=fabric_image,
-    #         output_width=target_width,
-    #         output_height=target_height,
-    #         patch_size=64,
-    #         overlap=16
-    #     )
-    #
-    #     return virtual
 
     def generate(
             self,
             fabric_image,
             target_width,
             target_height,
-            repeat_size=None
+            repeat_size=None,
+            repeat_size_y=None
     ):
         """
-        Prepare the fabric for rendering without changing its texture.
+        Generate a large virtual fabric using period-aligned seamless
+        tiling.
 
-        Strategy
-        --------
-        - Never resize.
-        - Never tile.
-        - Never quilt.
-        - Simply crop the center region.
+        Parameters
+        ----------
+        fabric_image : ndarray
+            The uploaded fabric photo (BGR, uint8).
 
-        This preserves the original weave, colour and texture exactly.
+        target_width : int
+            Width of the person image / shirt canvas.
+
+        target_height : int
+            Height of the person image / shirt canvas.
+
+        repeat_size : int or None
+            Detected horizontal (X-axis) pattern repeat, in pixels,
+            coming from FabricAnalyzer.detect_pattern_repeat().
+            None -> fabric is plain / repeat not detected, no
+            period-alignment is applied on X.
+
+        repeat_size_y : int or None
+            Detected vertical (Y-axis) pattern repeat, in pixels,
+            coming from FabricAnalyzer.detect_pattern_repeat_y().
+            None -> no period-alignment is applied on Y.
+
+        Returns
+        -------
+        ndarray
+            (target_height, target_width, 3) tiled fabric image.
         """
 
-        fabric_height, fabric_width = fabric_image.shape[:2]
-
-        # ----------------------------------------------------------
-        # Validate size
-        # ----------------------------------------------------------
-        if fabric_height < target_height or fabric_width < target_width:
-            raise ValueError(
-                f"Fabric image is too small.\n"
-                f"Fabric : ({fabric_width} x {fabric_height})\n"
-                f"Required: ({target_width} x {target_height})"
-            )
-
-        # ----------------------------------------------------------
-        # Crop from center
-        # ----------------------------------------------------------
-        start_x = (fabric_width - target_width) // 2
-        start_y = (fabric_height - target_height) // 2
-
         BASE_DIR = Path(__file__).resolve().parents[2]
-
         DEBUG_FOLDER = BASE_DIR / "test_images" / "debug"
-
         DEBUG_FOLDER.mkdir(parents=True, exist_ok=True)
 
         cv2.imwrite(
-            str(DEBUG_FOLDER / "debug0_before_croped.png"),
+            str(DEBUG_FOLDER / "debug0_before_scale.png"),
             fabric_image
         )
 
+        # ------------------------------------------------------------
+        # Step A: Scale the pattern to a sensible size relative to
+        # the shirt (existing, already-tested logic).
+        # ------------------------------------------------------------
 
-        cropped = fabric_image[
-                  start_y:start_y + target_height,
-                  start_x:start_x + target_width
-                  ]
-
-
-        cv2.imwrite(
-            str(DEBUG_FOLDER / "debug_3_croped.png"),
-            cropped
+        scale_factor = self.compute_scale_factor(
+            fabric_image,
+            repeat_size
         )
 
-        return cropped
+        fabric_image = self.resize_for_tiling(
+            fabric_image,
+            scale_factor
+        )
+
+        # The detected repeat distances must be scaled by the same
+        # factor, otherwise period-alignment in Step B will use a
+        # stale (pre-resize) period value.
+        if repeat_size:
+            repeat_size = max(1, int(repeat_size * scale_factor))
+
+        if repeat_size_y:
+            repeat_size_y = max(1, int(repeat_size_y * scale_factor))
+
+        print(f"Scale factor applied : {scale_factor}")
+        print(f"Repeat size (x) after scaling : {repeat_size}")
+        print(f"Repeat size (y) after scaling : {repeat_size_y}")
+
+        # ------------------------------------------------------------
+        # Step B: Crop the fabric down to an exact whole-number
+        # multiple of the pattern repeat, on both axes.
+        #
+        # This guarantees the tile boundary lands in the background
+        # gap between motifs instead of cutting a motif in half,
+        # which is what causes a visible seam line.
+        #
+        # If no repeat was detected (plain fabric, or detection
+        # failed), the fabric is used as-is on that axis - a plain
+        # fabric has no motif to misalign, so this is safe.
+        # ------------------------------------------------------------
+
+        h, w = fabric_image.shape[:2]
+
+        if repeat_size and repeat_size > 0 and repeat_size <= w:
+            crop_w = (w // repeat_size) * repeat_size
+        else:
+            crop_w = w
+
+        if repeat_size_y and repeat_size_y > 0 and repeat_size_y <= h:
+            crop_h = (h // repeat_size_y) * repeat_size_y
+        else:
+            crop_h = h
+
+        crop_w = max(crop_w, 1)
+        crop_h = max(crop_h, 1)
+
+        fabric_image = fabric_image[0:crop_h, 0:crop_w]
+
+        cv2.imwrite(
+            str(DEBUG_FOLDER / "debug1_period_aligned_tile_unit.png"),
+            fabric_image
+        )
+
+        print(f"Period-aligned tile unit size (w x h) : {crop_w} x {crop_h}")
+
+        # ------------------------------------------------------------
+        # Step C: Tile the period-aligned unit across the full
+        # target canvas, then crop to the exact requested size.
+        # ------------------------------------------------------------
+
+        tiles_y = int(np.ceil(target_height / fabric_image.shape[0])) + 1
+        tiles_x = int(np.ceil(target_width / fabric_image.shape[1])) + 1
+
+        tiled = np.tile(fabric_image, (tiles_y, tiles_x, 1))
+
+        tiled = tiled[0:target_height, 0:target_width]
+
+        cv2.imwrite(
+            str(DEBUG_FOLDER / "debug2_final_tiled_fabric.png"),
+            tiled
+        )
+
+        return tiled

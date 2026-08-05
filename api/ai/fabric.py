@@ -3,17 +3,45 @@ File:
     api/ai/fabric.py
 
 Purpose:
-    This module prepares a fabric image for shirt replacement.
+    This module prepares a fabric image for shirt replacement and
+    renders it realistically onto the detected shirt region.
 
 Current Milestone:
     ----------------
     ✔ Validate all inputs
-    ✔ Resize or tile the uploaded fabric
-    ✔ Return a prepared fabric image
+    ✔ Period-aligned seamless tiling of the uploaded fabric
+    ✔ RTV-based structure/fold extraction (texture-leak free)
+    ✔ Lab L-channel-only, highlight-safe shading application
+    ✔ Button detection + synthetic button rendering
+    ✔ Pocket outline detection (strict, single-candidate)
 
-Next Milestone:
-    ----------------
-    Apply the shirt mask and preserve lighting.
+CHANGELOG (most recent first)
+------------------------------
+NEW: render() now calls self.prepare_fabric() again (period-aligned
+     tiling via VirtualFabric), instead of using the raw fabric
+     image directly. Also passes pattern_repeat_y.
+NEW: preserve_lighting()'s multiply is NO LONGER applied in render()
+     -> it was double-brightening the fabric together with the RTV
+     shading map (illumination applied twice, compounding and
+     clipping to white on light fabrics). The function is kept
+     in the class for reference / future use, just not called.
+NEW: apply_structure_map_lab() uses a highlight-safe (screen-style)
+     blend for shading >= 1.0, so already-light fabrics do not blow
+     out to pure white and lose colour/pattern.
+NEW: separate_real_folds_from_texture() splits the RTV shading map
+     into a large-scale (real fold) band and a fine-scale (residual
+     texture/print-leak) band using a bilateral filter, and only
+     suppresses the fine band based on busyness.
+NEW: enhance_fold_contrast() uses unsharp-masking (edge-aware) gain
+     instead of a flat multiplier, so fold edges look crisp instead
+     of blobby/artificial.
+NEW: estimate_shirt_busyness() scores how "busy" (print-heavy) the
+     original shirt is, used to scale RTV smoothing + suppression.
+NEW: detect_buttons() / draw_synthetic_button() -> classical Hough
+     Circle detection along the placket + procedurally rendered
+     buttons (with non-max suppression + capped count).
+NEW: detect_pocket_outline() / draw_pocket_outline() -> strict,
+     single-best-candidate contour detection for the pocket outline.
 """
 
 import cv2
@@ -22,33 +50,22 @@ from api.ai.virtual_fabric import VirtualFabric
 from pathlib import Path
 from api.ai.rtv_smoothing import extract_rtv_structure
 
+
 class FabricRenderer:
     """
     FabricRenderer is responsible for preparing the uploaded fabric
-    before it is applied to the detected shirt.
+    and rendering it realistically onto the detected shirt region.
 
     This class DOES NOT:
         - detect the shirt
         - generate the SAM mask
-        - save images
-
-    It only prepares the fabric image.
-
-    Future milestones will extend this class to perform
-    realistic shirt rendering.
+        - save images (except debug snapshots)
     """
 
     def __init__(self):
         """
         Initialize helper classes.
-
-        Currently we only initialize the
-        Virtual Fabric generator.
-
-        In future more helper classes
-        will be initialized here.
         """
-
         self.virtual_fabric = VirtualFabric()
 
     ####################################################################
@@ -102,25 +119,15 @@ class FabricRenderer:
             )
 
     ####################################################################
-    # RESIZE FABRIC
+    # RESIZE FABRIC (legacy helper, kept for compatibility)
     ####################################################################
 
     def resize_fabric(self, fabric_image, target_height, target_width):
         """
-        Resize the uploaded fabric to match the person's image size.
-
-        Parameters
-        ----------
-        fabric_image : numpy.ndarray
-
-        target_height : int
-
-        target_width : int
-
-        Returns
-        -------
-        numpy.ndarray
-            Resized fabric image.
+        Simple stretch-resize of the fabric. Not used by render()
+        anymore (period-aligned tiling via prepare_fabric() is used
+        instead), kept here in case a caller still needs a plain
+        resize utility.
         """
 
         resized = cv2.resize(
@@ -130,7 +137,6 @@ class FabricRenderer:
         )
 
         return resized
-
 
     ####################################################################
     # PREPARE FABRIC
@@ -142,21 +148,33 @@ class FabricRenderer:
             target_width,
             target_height,
             repeat_size=None,
-            repeat_size_y=None          # NEW
+            repeat_size_y=None
     ):
+        """
+        Prepare the fabric before rendering.
+
+        Delegates to VirtualFabric.generate(), which performs
+        period-aligned seamless tiling (see virtual_fabric.py).
+        """
+
         return self.virtual_fabric.generate(
             fabric_image=fabric_image,
             target_width=target_width,
             target_height=target_height,
             repeat_size=repeat_size,
-            repeat_size_y=repeat_size_y  # NEW
+            repeat_size_y=repeat_size_y
         )
-    ####################################################################
-    # PRESERVE ORIGINAL SHIRT LIGHTING
-    ####################################################################
 
     ####################################################################
     # PRESERVE LIGHTING USING A NORMALIZED LIGHTING MAP
+    #
+    # NOTE: This function is intentionally NOT called from render()
+    # anymore. The RTV-based shading pipeline (extract_structure_map_rtv
+    # -> separate_real_folds_from_texture -> enhance_fold_contrast ->
+    # apply_structure_map_lab) already handles illumination + folds.
+    # Calling both this AND that pipeline compounds the brightness
+    # multiplier and blows out light-coloured fabrics to white.
+    # Kept here for reference / possible future use.
     ####################################################################
 
     def preserve_lighting(
@@ -172,9 +190,6 @@ class FabricRenderer:
         applies it to the uploaded fabric.
         """
 
-        # ---------------------------------------------
-        # Convert images to float
-        # ---------------------------------------------
         fabric = prepared_fabric.astype(np.float32)
 
         gray = cv2.cvtColor(
@@ -182,23 +197,14 @@ class FabricRenderer:
             cv2.COLOR_BGR2GRAY
         ).astype(np.float32)
 
-        # ---------------------------------------------
-        # Estimate illumination
-        # ---------------------------------------------
         illumination = cv2.GaussianBlur(
             gray,
             (81, 81),
             0
         )
 
-        # ---------------------------------------------
-        # Normalize illumination
-        # ---------------------------------------------
         illumination = illumination / (illumination.mean() + 1e-6)
 
-        # ---------------------------------------------
-        # Keep stronger lighting variation
-        # ---------------------------------------------
         illumination = np.clip(
             illumination,
             0.60,
@@ -207,9 +213,6 @@ class FabricRenderer:
 
         illumination = illumination[:, :, np.newaxis]
 
-        # ---------------------------------------------
-        # Apply lighting
-        # ---------------------------------------------
         result = fabric * illumination
 
         result = np.clip(
@@ -220,15 +223,22 @@ class FabricRenderer:
 
         return result
 
+    ####################################################################
+    # LEGACY: Gaussian high-pass fold map (superseded by RTV pipeline)
+    #
+    # Kept for reference / comparison only. Not called from render().
+    ####################################################################
+
     def extract_fold_map(
             self,
             person_image,
             shirt_mask
     ):
         """
-        Extract only folds and wrinkles.
-
-        This removes most of the original shirt texture.
+        Extract only folds and wrinkles using a Gaussian high-pass
+        filter. Superseded by extract_structure_map_rtv(), which
+        properly separates texture (periodic) from fold shading
+        (aperiodic) instead of relying on frequency alone.
         """
 
         gray = cv2.cvtColor(
@@ -242,20 +252,17 @@ class FabricRenderer:
             mask=shirt_mask.astype(np.uint8)
         )
 
-        # Large illumination
         low_frequency = cv2.GaussianBlur(
             gray,
             (41, 41),
             0
         )
 
-        # High-pass image
         high_frequency = cv2.subtract(
             gray,
             low_frequency
         )
 
-        # Normalize
         fold_map = cv2.normalize(
             high_frequency,
             None,
@@ -272,6 +279,7 @@ class FabricRenderer:
     ):
         """
         Remove tiny shirt texture while keeping folds.
+        (Legacy helper for extract_fold_map(), not used by render().)
         """
 
         kernel = np.ones((5, 5), np.uint8)
@@ -297,9 +305,9 @@ class FabricRenderer:
             strength=0.18
     ):
         """
-        Apply only fold information.
-
-        Original shirt colour and pattern are not copied.
+        Apply only fold information (legacy, additive blend).
+        Superseded by apply_structure_map_lab() (multiplicative,
+        Lab L-channel only). Not used by render().
         """
 
         fold = fold_map.astype(np.float32)
@@ -320,7 +328,28 @@ class FabricRenderer:
 
         return result
 
-    def extract_structure_map_rtv(self, person_image, shirt_mask, pattern_repeat=None, busyness=0.0):
+    ####################################################################
+    # RTV STRUCTURE EXTRACTION
+    ####################################################################
+
+    def extract_structure_map_rtv(
+            self,
+            person_image,
+            shirt_mask,
+            pattern_repeat=None,
+            busyness=0.0
+    ):
+        """
+        Extract a multiplicative shading map using Relative Total
+        Variation (RTV) smoothing - separates fold/lighting structure
+        (aperiodic) from weave/print texture (periodic), unlike a
+        plain frequency-only high-pass filter.
+
+        sigma is tied to the detected weave/print pitch when known;
+        for busy (print-heavy) shirts, smoothing is made more
+        aggressive to suppress texture leak.
+        """
+
         sigma = 3.0
         lam = 0.015
 
@@ -334,13 +363,103 @@ class FabricRenderer:
 
         # busy प्रिंटसाठी जास्त aggressive smoothing
         if busyness > 0.5:
-            sigma = max(sigma, 4.5)  # आधी 6.0 होता, आता कमी केला
-            lam = 0.025  # आधी 0.035 होता, आता कमी केला
+            sigma = max(sigma, 4.5)
+            lam = 0.025
 
         shading_map = extract_rtv_structure(
             person_image, shirt_mask, sigma=sigma, lam=lam, iterations=5
         )
         return shading_map
+
+    ####################################################################
+    # SEPARATE REAL FOLDS FROM RESIDUAL TEXTURE
+    ####################################################################
+
+    def separate_real_folds_from_texture(
+            self,
+            shading_map,
+            busyness=0.0,
+            large_fold_radius=25
+    ):
+        """
+        Splits the RTV shading map into two bands:
+
+        1. large_scale   -> real folds/wrinkles/drape (extracted with
+                             an edge-preserving bilateral filter, NOT
+                             a plain Gaussian blur, so true fold
+                             ridges stay sharp instead of turning
+                             into soft blobs).
+        2. fine_residual -> whatever is left (mostly leftover print
+                             texture on busy shirts). Only this band
+                             is suppressed, based on busyness.
+
+        This keeps genuine fold detail intact while still removing
+        residual print leak on busy shirts.
+        """
+
+        map_min, map_max = shading_map.min(), shading_map.max()
+        norm = (shading_map - map_min) / (map_max - map_min + 1e-6)
+        norm_u8 = (norm * 255).astype(np.uint8)
+
+        large_scale_u8 = cv2.bilateralFilter(
+            norm_u8,
+            d=0,
+            sigmaColor=30,
+            sigmaSpace=large_fold_radius
+        )
+
+        large_scale = (large_scale_u8.astype(np.float32) / 255.0) * \
+                      (map_max - map_min) + map_min
+
+        fine_residual = shading_map - large_scale
+
+        fine_blend = float(np.interp(busyness, [0.0, 1.0], [0.9, 0.10]))
+        fine_residual = fine_residual * fine_blend
+
+        result = large_scale + fine_residual
+
+        return result
+
+    ####################################################################
+    # ENHANCE FOLD CONTRAST (edge-aware unsharp masking)
+    ####################################################################
+
+    def enhance_fold_contrast(
+            self,
+            shading_map,
+            edge_gain=1.8,
+            smooth_sigma=8,
+            clip_range=(0.75, 1.30)
+    ):
+        """
+        Unsharp-masking based contrast enhancement:
+        only amplifies LOCAL EDGES (real fold transitions), leaves
+        flat regions untouched -> looks like a crease, not a blob.
+
+        Uses a soft (tanh) clip instead of a hard clip, and a light
+        final blur, to avoid harsh/plastic-looking edges.
+        """
+
+        very_smooth = cv2.GaussianBlur(shading_map, (0, 0), smooth_sigma)
+
+        edge_component = shading_map - very_smooth
+
+        enhanced = very_smooth + edge_component * edge_gain
+
+        lo, hi = clip_range
+        center = (lo + hi) / 2.0
+        half_range = (hi - lo) / 2.0
+        enhanced = center + half_range * np.tanh(
+            (enhanced - center) / half_range
+        )
+
+        enhanced = cv2.GaussianBlur(enhanced, (0, 0), 1.2)
+
+        return enhanced
+
+    ####################################################################
+    # APPLY STRUCTURE MAP (Lab L-channel, highlight-safe)
+    ####################################################################
 
     def apply_structure_map_lab(
             self,
@@ -381,6 +500,10 @@ class FabricRenderer:
 
         return result
 
+    ####################################################################
+    # SHIRT BUSYNESS ESTIMATION
+    ####################################################################
+
     def estimate_shirt_busyness(self, person_image, shirt_mask):
         """
         मूळ शर्टाची प्रिंट किती गुंतागुंतीची (busy) आहे ते मोजतं.
@@ -403,76 +526,18 @@ class FabricRenderer:
 
         return busyness_norm
 
-    def separate_real_folds_from_texture(
-            self,
-            shading_map,
-            busyness=0.0,
-            large_fold_radius=25  # आधी 45 होता -> कमी केला, edges जास्त शाबूत राहतील
-    ):
-        # ------------------------------------------------------------
-        # Gaussian ऐवजी bilateral -> edges (खरे fold ridges) जपले जातात
-        # ------------------------------------------------------------
-        map_min, map_max = shading_map.min(), shading_map.max()
-        norm = (shading_map - map_min) / (map_max - map_min + 1e-6)
-        norm_u8 = (norm * 255).astype(np.uint8)
-
-        large_scale_u8 = cv2.bilateralFilter(
-            norm_u8,
-            d=0,
-            sigmaColor=30,
-            sigmaSpace=large_fold_radius
-        )
-
-        large_scale = (large_scale_u8.astype(np.float32) / 255.0) * \
-                      (map_max - map_min) + map_min
-
-        fine_residual = shading_map - large_scale
-
-        fine_blend = float(np.interp(busyness, [0.0, 1.0], [0.9, 0.10]))
-        fine_residual = fine_residual * fine_blend
-
-        result = large_scale + fine_residual
-
-        return result
-
-    def enhance_fold_contrast(
-            self,
-            shading_map,
-            edge_gain=1.8,
-            smooth_sigma=8,
-            clip_range=(0.75, 1.30)
-    ):
-        """
-        Global gain ऐवजी unsharp masking वापरतो:
-        फक्त local edges (खरे fold transitions) तीक्ष्ण करतो,
-        सपाट भागांना touch करत नाही -> blob ऐवजी crease सारखं दिसतं.
-        """
-        # खूप coarse (मोठ्या स्केलचं) आवृत्ती काढा
-        very_smooth = cv2.GaussianBlur(shading_map, (0, 0), smooth_sigma)
-
-        # local edge component = जिथे अचानक बदल आहे तिथेच value मिळेल
-        edge_component = shading_map - very_smooth
-
-        # फक्त edge component amplify करा, बाकी coarse base तसाच ठेवा
-        enhanced = very_smooth + edge_component * edge_gain
-
-        # Soft clip -> harsh cutoff टाळण्यासाठी
-        lo, hi = clip_range
-        center = (lo + hi) / 2.0
-        half_range = (hi - lo) / 2.0
-        enhanced = center + half_range * np.tanh(
-            (enhanced - center) / half_range
-        )
-
-        enhanced = cv2.GaussianBlur(enhanced, (0, 0), 1.2)
-
-        return enhanced
-
-    ################################################################
-    #Buttons
-    ##################################################################
+    ####################################################################
+    # BUTTONS
+    ####################################################################
 
     def detect_buttons(self, person_image, shirt_mask, max_buttons=8):
+        """
+        Detects likely button locations along the shirt's center
+        placket using Hough Circle detection, restricted to a
+        narrow vertical strip, with non-max suppression to remove
+        duplicate/overlapping detections.
+        """
+
         gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY)
         mask = (shirt_mask > 0).astype(np.uint8)
 
@@ -494,9 +559,9 @@ class FabricRenderer:
             region_blur,
             cv2.HOUGH_GRADIENT,
             dp=1.2,
-            minDist=30,  # आधी 22 होता -> वाढवला, जवळपासची duplicates टाळण्यासाठी
+            minDist=30,
             param1=60,
-            param2=25,  # आधी 18 होता -> वाढवला, weak/false detections कमी होतील
+            param2=25,
             minRadius=5,
             maxRadius=11
         )
@@ -508,7 +573,7 @@ class FabricRenderer:
         raw = [c for c in raw if strip_mask[c[1], c[0]] > 0]
 
         # --------------------------------------------------------------
-        # NEW: Non-max suppression -> एकाच बटणासाठी अनेक circles टाळा
+        # Non-max suppression -> एकाच बटणासाठी अनेक circles टाळा
         # --------------------------------------------------------------
         deduped = []
         for (x, y, r) in raw:
@@ -519,19 +584,22 @@ class FabricRenderer:
                 deduped.append((x, y, r))
 
         # --------------------------------------------------------------
-        # NEW: जास्तीत जास्त बटणं मर्यादित करा (सामान्य शर्टला 5-8 बटणं असतात)
-        # Hough आधीच confidence नुसार sorted देतो, त्यामुळे top-N घ्या
+        # जास्तीत जास्त बटणं मर्यादित करा (Hough आधीच confidence नुसार
+        # sorted देतो, त्यामुळे top-N घेणं सुरक्षित आहे)
         # --------------------------------------------------------------
         deduped = deduped[:max_buttons]
 
         return deduped
 
-    #########################################################################
-
     def draw_synthetic_button(self, image, x, y, r):
+        """
+        Procedurally draws a small, generic (fabric-colour-based)
+        button. Uses only 2 subtle thread holes and low opacity to
+        avoid looking like a stark black/white "football" pattern.
+        """
+
         overlay = image.copy()
 
-        # स्टार्क पांढऱ्याऐवजी आजूबाजूच्या fabric रंगावर आधारित हलका रंग
         patch = image[max(0, y - 2 * r):y + 2 * r, max(0, x - 2 * r):x + 2 * r]
         if patch.size > 0:
             mean_c = patch.reshape(-1, 3).mean(axis=0)
@@ -548,19 +616,29 @@ class FabricRenderer:
             (255, 255, 255), -1, lineType=cv2.LINE_AA
         )
 
-        # फक्त 2 सूक्ष्म, low-contrast थ्रेड-होल्स (4 नाही -> football pattern टाळण्यासाठी)
+        # फक्त 2 सूक्ष्म, low-contrast थ्रेड-होल्स
         hole_r = max(1, r // 6)
         cv2.circle(overlay, (x - r // 4, y), hole_r, (120, 120, 120), -1, lineType=cv2.LINE_AA)
         cv2.circle(overlay, (x + r // 4, y), hole_r, (120, 120, 120), -1, lineType=cv2.LINE_AA)
 
-        # कमी opacity -> बटण फॅब्रिकवर हळुवारपणे बसतं, ठळक/कापल्यासारखं दिसत नाही
         cv2.addWeighted(overlay, 0.82, image, 0.18, 0, dst=image)
         return image
 
-    ###########################################
-    # pocket
-    ##############################################
+    ####################################################################
+    # POCKET
+    ####################################################################
+
     def detect_pocket_outline(self, person_image, shirt_mask):
+        """
+        Detects a single, best-candidate pocket outline using strict
+        area / aspect-ratio / shape / fill-ratio filters, so fabric
+        texture edge-noise is not mistaken for a pocket.
+
+        Returns at most one contour (a shirt has one chest pocket,
+        or none at all). Returning nothing is preferred over a
+        false-positive outline.
+        """
+
         gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY)
         mask = (shirt_mask > 0).astype(np.uint8) * 255
 
@@ -583,7 +661,7 @@ class FabricRenderer:
         for c in contours:
             area = cv2.contourArea(c)
 
-            # NEW: खूप मोठा minimum-area threshold -> fabric texture noise आपोआप गळून पडतो
+            # खूप मोठा minimum-area threshold -> fabric texture noise गळून पडतो
             if area < 0.015 * shirt_area:
                 continue
 
@@ -596,17 +674,17 @@ class FabricRenderer:
             if not (0.18 < rel_y < 0.45):
                 continue
 
-            # NEW: आकार साधारण आयताकृती (चौकोनी) आहे का ते तपासा
+            # आकार साधारण आयताकृती आहे का ते तपासा
             approx = cv2.approxPolyDP(c, 0.03 * cv2.arcLength(c, True), True)
             if not (4 <= len(approx) <= 8):
                 continue
 
-            # NEW: भरीव, घन आकार हवा -- विस्कळीत, तुटक रेषा नको
+            # भरीव, घन आकार हवा -- विस्कळीत, तुटक रेषा नको
             fill_ratio = area / float(w * h + 1e-6)
             if fill_ratio < 0.55:
                 continue
 
-            # NEW: फक्त सर्वात मोठा, सर्वात विश्वासार्ह उमेदवार ठेवा (एकच pocket असतो)
+            # फक्त सर्वात मोठा, सर्वात विश्वासार्ह उमेदवार ठेवा
             if area > best_area:
                 best_area = area
                 best_candidate = c
@@ -615,14 +693,15 @@ class FabricRenderer:
 
     def draw_pocket_outline(self, image, contours):
         """
-        detect_pocket_outline ने शोधलेल्या contour ला
-        इमेजवर एक हलकी, पातळ stitch-line म्हणून रेखाटतो.
+        Draws the detected pocket contour as a thin, subtle
+        stitch-line.
         """
         for c in contours:
             cv2.drawContours(
                 image, [c], -1, (55, 55, 55), 1, lineType=cv2.LINE_AA
             )
         return image
+
     ####################################################################
     # APPLY SHIRT MASK
     ####################################################################
@@ -642,48 +721,18 @@ class FabricRenderer:
         shirt region.
 
         Everything outside the shirt remains exactly the same.
-
-        NOTE
-        ----
-        This milestone does NOT preserve lighting or folds.
-        That will be implemented in the next milestone.
         """
 
-        # --------------------------------------------------------------
-        # Convert the SAM mask into a binary mask.
-        #
-        # Background = 0
-        # Shirt = 255
-        # --------------------------------------------------------------
         binary_mask = (shirt_mask > 0).astype("uint8") * 255
 
-        # --------------------------------------------------------------
-        # Convert the single-channel mask into a 3-channel mask.
-        #
-        # Person Image : (H, W, 3)
-        # Fabric Image : (H, W, 3)
-        # Mask         : (H, W)
-        #
-        # We need:
-        # Mask         : (H, W, 3)
-        # --------------------------------------------------------------
         binary_mask = cv2.merge([
             binary_mask,
             binary_mask,
             binary_mask
         ])
 
-        # --------------------------------------------------------------
-        # Copy the original image.
-        #
-        # We never modify the original image directly.
-        # --------------------------------------------------------------
         output = person_image.copy()
 
-        # --------------------------------------------------------------
-        # Wherever the shirt mask is white,
-        # replace those pixels with the prepared fabric.
-        # --------------------------------------------------------------
         output[binary_mask == 255] = prepared_fabric[binary_mask == 255]
 
         return output
@@ -704,14 +753,16 @@ class FabricRenderer:
 
         Steps
         -----
-        1. Validate inputs.
-        2. Prepare fabric.
-        3. Preserve original lighting.
-        4. Apply shirt mask.
+        1. Prepare fabric (period-aligned seamless tiling).
+        2. RTV-based structure/fold extraction.
+        3. Separate real folds from residual texture (busyness-aware).
+        4. Enhance fold contrast (edge-aware).
+        5. Apply shading multiplicatively on Lab L-channel only
+           (highlight-safe).
+        6. Replace shirt region.
+        7. Detect + draw buttons.
+        8. Detect + draw pocket outline.
         """
-        # ----------------------------------------------------------
-        # Extract analyzed fabric information.
-        # ----------------------------------------------------------
 
         # ----------------------------------------------------------
         # Debug Output Folder
@@ -723,29 +774,31 @@ class FabricRenderer:
 
         DEBUG_FOLDER.mkdir(parents=True, exist_ok=True)
 
-
-
         fabric_image = fabric_info["original_fabric"]
         cv2.imwrite(
             str(DEBUG_FOLDER / "debug_0_prepared_fabric2.png"),
             fabric_image
         )
 
-
-        # pattern_repeat = fabric_info["pattern_repeat"]
+        pattern_repeat = fabric_info.get("pattern_repeat")
+        pattern_repeat_y = fabric_info.get("pattern_repeat_y")
 
         print("Before prepare:", fabric_image.shape)
         print("Fabric dtype:", fabric_image.dtype)
+        print("Pattern repeat (x):", pattern_repeat)
+        print("Pattern repeat (y):", pattern_repeat_y)
 
-        # Step 1
-        # prepared_fabric = self.prepare_fabric(
-        #     fabric_image=fabric_image,
-        #     target_width=person_image.shape[1],
-        #     target_height=person_image.shape[0],
-        #     repeat_size=pattern_repeat
-        # )
+        # ----------------------------------------------------------
+        # Step 1: Period-aligned seamless tiling (VirtualFabric)
+        # ----------------------------------------------------------
 
-        prepared_fabric=fabric_image
+        prepared_fabric = self.prepare_fabric(
+            fabric_image=fabric_image,
+            target_width=person_image.shape[1],
+            target_height=person_image.shape[0],
+            repeat_size=pattern_repeat,
+            repeat_size_y=pattern_repeat_y
+        )
 
         print("After prepare:", prepared_fabric.shape)
         print("prepared dtype:", prepared_fabric.dtype)
@@ -754,16 +807,15 @@ class FabricRenderer:
             str(DEBUG_FOLDER / "debug_1_prepared_fabric2.png"),
             prepared_fabric
         )
-        # Step 2
-        # ----------------------------------------------------------
-        # Preserve overall lighting.
-        # ----------------------------------------------------------
 
         # ----------------------------------------------------------
-        # NEW: preserve_lighting चा वेगळा multiply काढला —
-        # RTV shading_map आधीच illumination + folds दोन्ही सांभाळतो.
-        # दोन्ही एकत्र वापरल्याने brightness दुप्पट होत होती.
+        # Step 2: preserve_lighting()'s separate multiply is
+        # intentionally SKIPPED here -> the RTV shading pipeline
+        # below already handles illumination + folds. Applying both
+        # was compounding brightness and clipping light fabrics to
+        # white.
         # ----------------------------------------------------------
+
         realistic_fabric = prepared_fabric
 
         cv2.imwrite(
@@ -772,49 +824,19 @@ class FabricRenderer:
         )
 
         # ----------------------------------------------------------
-        # Extract fine details from the original shirt.
+        # Step 3: Estimate how "busy" the original shirt print is.
         # ----------------------------------------------------------
 
-        # ----------------------------------------------------------
-        # Extract shirt structure.
-        # ----------------------------------------------------------
-
-        # fold_map = self.extract_fold_map(
-        #     person_image,
-        #     shirt_mask
-        # )
-        #
-        # fold_map = self.clean_fold_map(
-        #     fold_map
-        # )
-        #
-        # cv2.imwrite(
-        #     str(DEBUG_FOLDER / "debug_3_after_fold_map2.png"),
-        #     fold_map
-        # )
-        #
-        # realistic_fabric = self.apply_fold_map(
-        #     realistic_fabric,
-        #     fold_map,
-        #     strength=0.18
-        # )
-        #
-        # cv2.imwrite(
-        #     str(DEBUG_FOLDER / "debug_4_after_realastic_fabric2.png"),
-        #     realistic_fabric
-        # )
-
-        pattern_repeat = fabric_info.get("pattern_repeat")
-
-        # ----------------------------------------------------------
-        # NEW: शर्टाची प्रिंट किती busy आहे ते मोजा
-        # ----------------------------------------------------------
         busyness = self.estimate_shirt_busyness(
             person_image,
             shirt_mask
         )
 
         print("Shirt busyness score:", busyness)
+
+        # ----------------------------------------------------------
+        # Step 4: RTV structure extraction.
+        # ----------------------------------------------------------
 
         shading_map = self.extract_structure_map_rtv(
             person_image,
@@ -824,14 +846,20 @@ class FabricRenderer:
         )
 
         # ----------------------------------------------------------
-        # NEW: busy प्रिंट असेल तर shading map चा प्रभाव कमी करा
-        # (1.0 = neutral, कोणताही effect नाही)
+        # Step 5: Separate real folds (large_scale) from residual
+        # print-leak texture (fine_residual); only suppress the
+        # latter, based on busyness.
         # ----------------------------------------------------------
+
         shading_map = self.separate_real_folds_from_texture(
             shading_map,
             busyness=busyness,
             large_fold_radius=25
         )
+
+        # ----------------------------------------------------------
+        # Step 6: Edge-aware fold contrast enhancement.
+        # ----------------------------------------------------------
 
         shading_map = self.enhance_fold_contrast(
             shading_map,
@@ -843,22 +871,29 @@ class FabricRenderer:
             "Shading map range after enhancement:",
             shading_map.min(), shading_map.max(), shading_map.std()
         )
+
         cv2.imwrite(
             str(DEBUG_FOLDER / "debug_3_rtv_shading_map6.png"),
             np.clip(shading_map * 127, 0, 255).astype(np.uint8)
         )
 
+        # ----------------------------------------------------------
+        # Step 7: Apply shading on the Lab L-channel only
+        # (highlight-safe).
+        # ----------------------------------------------------------
+
         realistic_fabric = self.apply_structure_map_lab(
             realistic_fabric,
             shading_map
         )
+
         cv2.imwrite(
             str(DEBUG_FOLDER / "debug_4_after_realistic_fabric2.png"),
             realistic_fabric
         )
 
         # ----------------------------------------------------------
-        # Replace only the shirt region.
+        # Step 8: Replace only the shirt region.
         # ----------------------------------------------------------
 
         output = self.apply_shirt_mask(
@@ -868,13 +903,18 @@ class FabricRenderer:
         )
 
         # ----------------------------------------------------------
-        # NEW: Buttons आणि Pocket outline जोडा
+        # Step 9: Buttons.
         # ----------------------------------------------------------
+
         buttons = self.detect_buttons(person_image, shirt_mask)
         print("Buttons found:", len(buttons))
 
         for (bx, by, br) in buttons:
             output = self.draw_synthetic_button(output, bx, by, br)
+
+        # ----------------------------------------------------------
+        # Step 10: Pocket outline.
+        # ----------------------------------------------------------
 
         pocket_contours = self.detect_pocket_outline(person_image, shirt_mask)
         print("Pocket candidates found:", len(pocket_contours))
@@ -882,4 +922,3 @@ class FabricRenderer:
         output = self.draw_pocket_outline(output, pocket_contours)
 
         return output
-

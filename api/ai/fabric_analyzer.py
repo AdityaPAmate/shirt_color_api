@@ -32,11 +32,19 @@ Single Responsibility Principle (SRP).
 
 Only one responsibility:
 Analyse fabric.
+
+CHANGELOG
+---------
+NEW: Added detect_pattern_repeat_y() -> vertical (Y-axis) repeat
+     period detection, needed for period-aligned seamless tiling
+     in VirtualFabric.generate().
+NEW: analyze() now also returns "pattern_repeat_y".
 """
 
 import cv2
 import numpy as np
 import math
+
 
 class FabricAnalyzer:
     """
@@ -152,6 +160,7 @@ class FabricAnalyzer:
         # return normalized
 
         return fabric_image
+
     ####################################################################
     # ANALYSE FABRIC
     ####################################################################
@@ -221,9 +230,11 @@ class FabricAnalyzer:
         has_pattern = self.has_repeating_pattern(fabric_image)
 
         pattern_repeat = None
+        pattern_repeat_y = None  # NEW
 
         if has_pattern:
             pattern_repeat = self.detect_pattern_repeat(fabric_image)
+            pattern_repeat_y = self.detect_pattern_repeat_y(fabric_image)  # NEW
 
         return {
 
@@ -249,6 +260,8 @@ class FabricAnalyzer:
             "has_pattern": has_pattern,
 
             "pattern_repeat": pattern_repeat,
+
+            "pattern_repeat_y": pattern_repeat_y,  # NEW
 
             "pattern_direction":  self.detect_pattern_direction(fabric_image),
 
@@ -351,15 +364,7 @@ class FabricAnalyzer:
         return "horizontal"
 
     ####################################################################
-    # DETECT PATTERN REPEAT
-    ####################################################################
-
-    ####################################################################
-    # DETECT PATTERN REPEAT
-    ####################################################################
-
-    ####################################################################
-    # DETECT PATTERN REPEAT
+    # DETECT PATTERN REPEAT (HORIZONTAL / X-AXIS)
     ####################################################################
 
     def detect_pattern_repeat(
@@ -367,7 +372,8 @@ class FabricAnalyzer:
             fabric_image
     ):
         """
-        Estimate the dominant repeating distance of the fabric pattern.
+        Estimate the dominant repeating distance of the fabric pattern
+        along the X-axis (horizontal).
 
         Current Version
         ----------------
@@ -482,6 +488,123 @@ class FabricAnalyzer:
 
         if len(significant) < 2:
             return None
+
+        return int(significant[-1])
+
+    ####################################################################
+    # DETECT PATTERN REPEAT (VERTICAL / Y-AXIS)
+    ####################################################################
+    # NEW METHOD
+    ####################################################################
+
+    def detect_pattern_repeat_y(
+            self,
+            fabric_image
+    ):
+        """
+        Same idea as detect_pattern_repeat(), but runs along columns
+        instead of rows -> detects the VERTICAL repeat period.
+
+        This is required for period-aligned seamless tiling
+        (VirtualFabric.generate()), because floral / check fabrics
+        repeat in BOTH the X and Y directions.
+        """
+
+        gray = cv2.cvtColor(
+            fabric_image,
+            cv2.COLOR_BGR2GRAY
+        ).astype(np.float32)
+
+        height, width = gray.shape
+
+        # ----------------------------------------------------------
+        # Sample multiple columns.
+        # ----------------------------------------------------------
+
+        sample_cols = np.linspace(
+            int(width * 0.20),
+            int(width * 0.80),
+            9,
+            dtype=int
+        )
+
+        accumulated = np.zeros(height, dtype=np.float32)
+
+        valid_cols = 0
+
+        for col_index in sample_cols:
+            col = gray[:, col_index].copy()
+
+            col -= np.mean(col)
+
+            correlation = np.correlate(
+                col,
+                col,
+                mode="full"
+            )
+
+            correlation = correlation[
+                          correlation.size // 2:
+                          ]
+
+            correlation[0] = 0
+
+            accumulated += correlation
+
+            valid_cols += 1
+
+        if valid_cols == 0:
+            return None
+
+        correlation = accumulated / valid_cols
+
+        # ----------------------------------------------------------
+        # Reject fabrics with very weak repeating signals.
+        # ----------------------------------------------------------
+
+        energy = np.std(gray)
+
+        if energy < 12:
+            return None
+
+        # ----------------------------------------------------------
+        # Ignore very small repeats.
+        # ----------------------------------------------------------
+
+        MIN_REPEAT = 20
+
+        correlation[:MIN_REPEAT] = 0
+
+        # ----------------------------------------------------------
+        # Find local peaks.
+        # ----------------------------------------------------------
+
+        peaks = []
+
+        for i in range(
+                MIN_REPEAT,
+                len(correlation) - 1
+        ):
+
+            if (
+                    correlation[i] > correlation[i - 1]
+                    and
+                    correlation[i] > correlation[i + 1]
+                    and
+                    correlation[i] > (correlation.max() * 0.75)
+            ):
+                peaks.append(i)
+
+        if not peaks:
+            return None
+
+        significant = sorted(peaks)
+
+        if len(significant) < 2:
+            return None
+
+        print("Detected Y-Peaks :", significant)
+        print("Selected Y-Repeat :", max(significant))
 
         return int(significant[-1])
 
