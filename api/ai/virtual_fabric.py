@@ -128,6 +128,49 @@ class VirtualFabric:
         return 1.0
 
     ####################################################################
+    # MAKE EDGES SEAMLESS (cross-fade lighting/colour at boundaries)
+    ####################################################################
+
+    def make_edges_seamless(self, fabric_image, blend_frac=0.10):
+        """
+        Period-aligned crop फक्त pattern ची JAGA जुळवतो.
+        पण खऱ्या फोटोत डाव्या/उजव्या किंवा वरच्या/खालच्या कडेवर
+        थोडी वेगळी lighting असू शकते (real-world photo असल्याने).
+
+        हे function tile च्या right edge ला left edge शी, आणि
+        bottom edge ला top edge शी हळुवारपणे cross-fade (blend)
+        करतं -> tile केल्यावर brightness/colour मध्ये कुठलीही
+        अचानक उडी (visible seam) दिसणार नाही.
+        """
+
+        img = fabric_image.astype(np.float32)
+        h, w = img.shape[:2]
+
+        bw = max(2, int(w * blend_frac))
+        bh = max(2, int(h * blend_frac))
+
+        # ------------------------------------------------------------
+        # Horizontal blend: उजवी कड डाव्या कडेकडे हळूहळू cross-fade करा
+        # ------------------------------------------------------------
+        left_strip = img[:, :bw].copy()
+        right_strip = img[:, -bw:].copy()
+
+        alpha = np.linspace(0, 1, bw).reshape(1, bw, 1)
+
+        img[:, -bw:] = right_strip * (1 - alpha) + left_strip * alpha
+
+        # ------------------------------------------------------------
+        # Vertical blend: खालची कड वरच्या कडेकडे हळूहळू cross-fade करा
+        # ------------------------------------------------------------
+        top_strip = img[:bh, :].copy()
+        bottom_strip = img[-bh:, :].copy()
+
+        beta = np.linspace(0, 1, bh).reshape(bh, 1, 1)
+
+        img[-bh:, :] = bottom_strip * (1 - beta) + top_strip * beta
+
+        return np.clip(img, 0, 255).astype(np.uint8)
+    ####################################################################
     # CREATE VIRTUAL FABRIC (Period-aligned seamless tiling)
     ####################################################################
 
@@ -240,6 +283,16 @@ class VirtualFabric:
 
         cv2.imwrite(
             str(DEBUG_FOLDER / "debug1_period_aligned_tile_unit.png"),
+            fabric_image
+        )
+
+        # ----------------------------------------------------------
+        # NEW: कडांवरची lighting/brightness मिसमॅच cross-fade ने काढा
+        # ----------------------------------------------------------
+        fabric_image = self.make_edges_seamless(fabric_image, blend_frac=0.10)
+
+        cv2.imwrite(
+            str(DEBUG_FOLDER / "debug1b_edge_blended_tile_unit.png"),
             fabric_image
         )
 

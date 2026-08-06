@@ -561,7 +561,7 @@ class FabricRenderer:
             dp=1.2,
             minDist=30,
             param1=60,
-            param2=25,
+            param2=11,
             minRadius=5,
             maxRadius=11
         )
@@ -622,6 +622,34 @@ class FabricRenderer:
         cv2.circle(overlay, (x + r // 4, y), hole_r, (120, 120, 120), -1, lineType=cv2.LINE_AA)
 
         cv2.addWeighted(overlay, 0.82, image, 0.18, 0, dst=image)
+        return image
+    ############################################################
+    def draw_placket_line(self, image, shirt_mask):
+        """
+        शर्टाच्या मधोमध, बटणांच्या रांगेजवळ एक हलकी dashed शिवण-रेषा काढतो
+        -> शर्ट "शिवलेला" वाटतो. पूर्णपणे भौमितिक (mask-आधारित), AI नाही.
+        """
+        mask = (shirt_mask > 0).astype(np.uint8)
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return image
+
+        x_center = int(np.median(xs))
+        y_top, y_bottom = ys.min(), ys.max()
+
+        dash_len = 6
+        gap_len = 4
+        y = y_top
+
+        while y < y_bottom:
+            y_end = min(y + dash_len, y_bottom)
+            if mask[y, x_center] > 0 and mask[y_end - 1, x_center] > 0:
+                cv2.line(
+                    image, (x_center, y), (x_center, y_end),
+                    (60, 60, 60), 1, lineType=cv2.LINE_AA
+                )
+            y += dash_len + gap_len
+
         return image
 
     ####################################################################
@@ -702,40 +730,65 @@ class FabricRenderer:
             )
         return image
 
+    ###########################################################################
+    def draw_shoulder_seam(self, image, shirt_mask, shoulder_frac=0.10):
+        """
+        Mask च्या भूमितीवरून खांद्याची शिवण-रेषा अंदाजे काढतो
+        (collar पासून shoulder_frac टक्के खाली, हलकी V-आकाराची झुक).
+        """
+        mask = (shirt_mask > 0).astype(np.uint8)
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return image
+
+        y_top, y_bottom = ys.min(), ys.max()
+        shirt_h = y_bottom - y_top
+
+        y_shoulder = y_top + int(shirt_h * shoulder_frac)
+        row_xs = np.where(mask[y_shoulder] > 0)[0]
+
+        if len(row_xs) == 0:
+            return image
+
+        x_left, x_right = row_xs.min(), row_xs.max()
+        x_mid = (x_left + x_right) // 2
+        dip = int(shirt_h * 0.02)
+
+        pts = np.array([
+            [x_left, y_shoulder],
+            [x_mid, y_shoulder + dip],
+            [x_right, y_shoulder]
+        ], dtype=np.int32)
+
+        cv2.polylines(
+            image, [pts.reshape(-1, 1, 2)], False,
+            (60, 60, 60), 1, lineType=cv2.LINE_AA
+        )
+
+        return image
+
     ####################################################################
     # APPLY SHIRT MASK
     ####################################################################
 
-    def apply_shirt_mask(
-            self,
-            person_image,
-            shirt_mask,
-            prepared_fabric
-    ):
+    def apply_shirt_mask(self, person_image, shirt_mask, prepared_fabric):
         """
-        Apply the shirt mask to the prepared fabric.
-
-        Purpose
-        -------
-        This function copies the fabric only inside the detected
-        shirt region.
-
-        Everything outside the shirt remains exactly the same.
+        NEW: Binary threshold ऐवजी feathered (soft) alpha-blend वापरतो
+        -> शर्टाच्या कडेवरची तुटक/ठिपक्यासारखी रेषा जाते, मऊ स्वच्छ कड मिळते.
         """
+        mask_f = shirt_mask.astype(np.float32)
+        if mask_f.max() > 1.0:
+            mask_f = mask_f / 255.0
 
-        binary_mask = (shirt_mask > 0).astype("uint8") * 255
+        mask_f = cv2.GaussianBlur(mask_f, (0, 0), 1.5)
+        mask_3ch = cv2.merge([mask_f, mask_f, mask_f])
 
-        binary_mask = cv2.merge([
-            binary_mask,
-            binary_mask,
-            binary_mask
-        ])
+        output = (
+                prepared_fabric.astype(np.float32) * mask_3ch +
+                person_image.astype(np.float32) * (1 - mask_3ch)
+        )
 
-        output = person_image.copy()
-
-        output[binary_mask == 255] = prepared_fabric[binary_mask == 255]
-
-        return output
+        return np.clip(output, 0, 255).astype(np.uint8)
 
     ####################################################################
     # COMPLETE FABRIC RENDER
@@ -920,5 +973,11 @@ class FabricRenderer:
         print("Pocket candidates found:", len(pocket_contours))
 
         output = self.draw_pocket_outline(output, pocket_contours)
+
+        # ----------------------------------------------------------
+        # NEW: Placket line आणि shoulder seam जोडा
+        # ----------------------------------------------------------
+        output = self.draw_placket_line(output, shirt_mask)
+        output = self.draw_shoulder_seam(output, shirt_mask, shoulder_frac=0.06)
 
         return output
