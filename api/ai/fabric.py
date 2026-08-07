@@ -49,6 +49,7 @@ import numpy as np
 from api.ai.virtual_fabric import VirtualFabric
 from pathlib import Path
 from api.ai.rtv_smoothing import extract_rtv_structure
+from api.ai.fabric_analyzer import FabricAnalyzer
 
 
 class FabricRenderer:
@@ -67,8 +68,9 @@ class FabricRenderer:
         Initialize helper classes.
         """
         self.virtual_fabric = VirtualFabric()
+        self.fabric_analyzer = FabricAnalyzer()   ## NEW -- मूळ शर्टाचा pattern शोधण्यासाठी
 
-    ####################################################################
+        ####################################################################
     # INPUT VALIDATION
     ####################################################################
 
@@ -337,18 +339,16 @@ class FabricRenderer:
             person_image,
             shirt_mask,
             pattern_repeat=None,
-            busyness=0.0
+            busyness=0.0,
+            busyness_raw=0.0
     ):
-        """
-        Extract a multiplicative shading map using Relative Total
-        Variation (RTV) smoothing - separates fold/lighting structure
-        (aperiodic) from weave/print texture (periodic), unlike a
-        plain frequency-only high-pass filter.
+        mask = (shirt_mask > 0).astype(np.uint8)
+        ys, xs = np.where(mask > 0)
 
-        sigma is tied to the detected weave/print pitch when known;
-        for busy (print-heavy) shirts, smoothing is made more
-        aggressive to suppress texture leak.
-        """
+        if len(xs) > 0:
+            shirt_width_px = int(xs.max() - xs.min())
+        else:
+            shirt_width_px = 400  # fallback, mask रिकामी असल्यास
 
         sigma = 3.0
         lam = 0.015
@@ -357,20 +357,41 @@ class FabricRenderer:
             try:
                 pitch = min(pattern_repeat) if isinstance(pattern_repeat, (tuple, list)) else pattern_repeat
                 if pitch and pitch > 0:
-                    sigma = max(1.5, min(8.0, pitch * 0.5))
+                    sigma = max(1.5, min(30.0, pitch * 0.5))
             except Exception:
                 pass
 
-        # busy प्रिंटसाठी जास्त aggressive smoothing
         if busyness > 0.5:
             sigma = max(sigma, 4.5)
-            lam = 0.025
+            lam = max(lam, 0.025)
+
+        if busyness_raw > 30:
+            busy_floor_sigma = float(np.interp(busyness_raw, [30, 100], [10, 35]))
+            busy_floor_lam = float(np.interp(busyness_raw, [30, 100], [0.02, 0.06]))
+            sigma = max(sigma, busy_floor_sigma)
+            lam = max(lam, busy_floor_lam)
+
+        # ----------------------------------------------------------
+        # NEW: शर्टाच्या रुंदीवर आधारित निश्चित (unconditional) किमान
+        # smoothing -- busyness किंवा pitch detection चुकलं/कमी आलं
+        # तरीही, हे नेहमीच लागू होतं. contrast-based busyness score
+        # हा "pattern किती मोठा आहे" याचा विश्वासार्ह निकष नाही हे
+        # या शर्टावरून सिद्ध झालं -- त्यामुळे आता आकारावर (size)
+        # आधारित, हमखास काम करणारा floor वापरतोय.
+        # ----------------------------------------------------------
+        size_floor_sigma = shirt_width_px * 0.035
+        size_floor_lam = 0.030
+
+        sigma = max(sigma, size_floor_sigma)
+        lam = max(lam, size_floor_lam)
+
+        print(f"Shirt width (px): {shirt_width_px}")
+        print(f"RTV params -> sigma: {sigma:.2f}, lam: {lam:.4f}")
 
         shading_map = extract_rtv_structure(
-            person_image, shirt_mask, sigma=sigma, lam=lam, iterations=5
+            person_image, shirt_mask, sigma=sigma, lam=lam, iterations=6
         )
         return shading_map
-
     ####################################################################
     # SEPARATE REAL FOLDS FROM RESIDUAL TEXTURE
     ####################################################################
@@ -420,6 +441,51 @@ class FabricRenderer:
 
         return result
 
+    def compute_fold_displacement_field(
+            self,
+            shading_map_for_geometry,
+            strength=4.0,
+            smooth_sigma=4
+    ):
+        """
+        shading_map_for_geometry ला एक "उंची-खोली" (height field) समजून,
+        त्याच्या gradient वरून displacement काढतो. Ridge (उंच भाग) वर
+        vectors एकवटतात -> पॅटर्न दाबल्यासारखा दिसतो (fold वर कापड स्वतः
+        दुमडतं तसा भास). Valley (खोल भाग) वर vectors पसरतात -> पॅटर्न
+        किंचित ताणल्यासारखा दिसतो. यामुळे नुसतं "रेषा वाकणं" नाही तर
+        खरं "3D कापड" असल्याचा depth-cue तयार होतो.
+        """
+        h = cv2.GaussianBlur(shading_map_for_geometry, (0, 0), smooth_sigma)
+
+        grad_x = cv2.Sobel(h, cv2.CV_32F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(h, cv2.CV_32F, 0, 1, ksize=3)
+
+        grad_x = grad_x / (np.abs(grad_x).max() + 1e-6)
+        grad_y = grad_y / (np.abs(grad_y).max() + 1e-6)
+
+        dx = (-grad_x * strength).astype(np.float32)
+        dy = (-grad_y * strength).astype(np.float32)
+
+        return dx, dy
+
+    def apply_fold_displacement(self, fabric_image, dx, dy):
+        """
+        dx, dy नुसार fabric च्या प्रत्येक pixel ला त्याच्या मूळ जागेवरून
+        सरकवतो (cv2.remap). हेच पॅटर्नला "सपाट प्रिंट" ऐवजी "खरं दुमडलेलं
+        कापड" असं दिसायला लावतं.
+        """
+        h, w = fabric_image.shape[:2]
+        grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
+
+        map_x = (grid_x + dx).astype(np.float32)
+        map_y = (grid_y + dy).astype(np.float32)
+
+        warped = cv2.remap(
+            fabric_image, map_x, map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT
+        )
+        return warped
     ####################################################################
     # ENHANCE FOLD CONTRAST (edge-aware unsharp masking)
     ####################################################################
@@ -500,32 +566,48 @@ class FabricRenderer:
 
         return result
 
+    def estimate_shirt_pattern_pitch(self, person_image, shirt_mask):
+        mask = (shirt_mask > 0).astype(np.uint8)
+        ys, xs = np.where(mask > 0)
+
+        if len(xs) == 0:
+            return None
+
+        y0, y1 = ys.min(), ys.max() + 1
+        x0, x1 = xs.min(), xs.max() + 1
+
+        shirt_crop = person_image[y0:y1, x0:x1]
+
+        pitch_x = self.fabric_analyzer.detect_pattern_repeat(shirt_crop)
+        pitch_y = self.fabric_analyzer.detect_pattern_repeat_y(shirt_crop)
+
+        candidates = [p for p in (pitch_x, pitch_y) if p]
+
+        if not candidates:
+            return None
+
+        # बदललं: min ऐवजी max -> दोन्ही दिशांतले सर्वात मोठे checks/lines
+        # सुद्धा पूर्णपणे smooth होतील याची खात्री
+        return max(candidates)
+
     ####################################################################
     # SHIRT BUSYNESS ESTIMATION
     ####################################################################
 
     def estimate_shirt_busyness(self, person_image, shirt_mask):
-        """
-        मूळ शर्टाची प्रिंट किती गुंतागुंतीची (busy) आहे ते मोजतं.
-        जास्त busyness -> जास्त शक्यता की RTV मध्ये प्रिंट लीक होईल.
-        Returns: 0.0 (साधा/plain शर्ट) ते 1.0 (खूप busy प्रिंट)
-        """
         gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY)
         mask = (shirt_mask > 0).astype(np.uint8)
 
         if mask.sum() == 0:
-            return 0.0
+            return 0.0, 0.0   # NEW: (normalized, raw) दोन्ही परत करतो
 
         lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3)
         lap_masked = lap[mask > 0]
 
-        busyness = np.std(lap_masked)
+        busyness_raw = float(np.std(lap_masked))          # NEW: uncapped
+        busyness_norm = float(np.clip(busyness_raw / 40.0, 0.0, 1.0))
 
-        # हे threshold तुमच्या test images वर calibrate करा
-        busyness_norm = float(np.clip(busyness / 40.0, 0.0, 1.0))
-
-        return busyness_norm
-
+        return busyness_norm, busyness_raw   # NEW
     ####################################################################
     # BUTTONS
     ####################################################################
@@ -733,8 +815,10 @@ class FabricRenderer:
     ###########################################################################
     def draw_shoulder_seam(self, image, shirt_mask, shoulder_frac=0.10):
         """
-        Mask च्या भूमितीवरून खांद्याची शिवण-रेषा अंदाजे काढतो
-        (collar पासून shoulder_frac टक्के खाली, हलकी V-आकाराची झुक).
+        Mask च्या भूमितीवरून खांद्याची शिवण-रेषा काढतो.
+        V-neck collar मुळे row मध्ये गॅप (skin) असू शकतो -> तो गॅप ओळखून
+        प्रत्येक तुकडा (segment) स्वतंत्रपणे काढतो, गॅपमधून सरळ रेषा
+        काढत नाही.
         """
         mask = (shirt_mask > 0).astype(np.uint8)
         ys, xs = np.where(mask > 0)
@@ -745,28 +829,108 @@ class FabricRenderer:
         shirt_h = y_bottom - y_top
 
         y_shoulder = y_top + int(shirt_h * shoulder_frac)
-        row_xs = np.where(mask[y_shoulder] > 0)[0]
+        row = mask[y_shoulder]
 
+        # ------------------------------------------------------------
+        # NEW: row मधले सलग (contiguous) segments शोधा
+        # ------------------------------------------------------------
+        row_xs = np.where(row > 0)[0]
         if len(row_xs) == 0:
             return image
 
-        x_left, x_right = row_xs.min(), row_xs.max()
-        x_mid = (x_left + x_right) // 2
-        dip = int(shirt_h * 0.02)
+        segments = []
+        seg_start = row_xs[0]
+        prev = row_xs[0]
 
-        pts = np.array([
-            [x_left, y_shoulder],
-            [x_mid, y_shoulder + dip],
-            [x_right, y_shoulder]
-        ], dtype=np.int32)
+        for x in row_xs[1:]:
+            if x - prev > 3:  # गॅप सापडला -> नवीन segment सुरू
+                segments.append((seg_start, prev))
+                seg_start = x
+            prev = x
+        segments.append((seg_start, prev))
 
-        cv2.polylines(
-            image, [pts.reshape(-1, 1, 2)], False,
-            (60, 60, 60), 1, lineType=cv2.LINE_AA
-        )
+        # ------------------------------------------------------------
+        # प्रत्येक segment साठी वेगळी रेषा काढा -- गॅपमधून जोडू नका
+        # ------------------------------------------------------------
+        dip = int(shirt_h * 0.015)
+
+        for (x_left, x_right) in segments:
+            if x_right - x_left < 15:  # खूप छोटा तुकडा -> noise, वगळा
+                continue
+
+            x_mid = (x_left + x_right) // 2
+
+            pts = np.array([
+                [x_left, y_shoulder],
+                [x_mid, y_shoulder + dip],
+                [x_right, y_shoulder]
+            ], dtype=np.int32)
+
+            cv2.polylines(
+                image, [pts.reshape(-1, 1, 2)], False,
+                (60, 60, 60), 1, lineType=cv2.LINE_AA
+            )
 
         return image
 
+    def remove_straight_lines_and_blobs(self, shading_map, min_line_length=60):
+        """
+        RTV आणि separate_real_folds_from_texture फक्त "periodicity" या
+        निकषावर texture काढतात -- पण काही शर्टवर सरळ रेषा (color-block
+        seam) किंवा logo/emblem असतात, जे periodic नसतात, त्यामुळे ते
+        "खरा fold" समजून वाचतात.
+
+        हा नवीन filter दोन वेगळे निकष वापरतो:
+        1. लांब, पूर्ण सरळ रेषा (Hough Line Transform) -> खरे folds
+           क्वचितच पूर्ण सरळ असतात -> neutral करा.
+        2. लहान, वेगळे, तीक्ष्ण ठिपके (top-hat morphology) -> खरं fold
+           शेजारच्या भागाशी हळूहळू जोडलेलं असतं, वेगळा ठिपका नसतं
+           -> neutral करा.
+        """
+        norm = np.clip(
+            (shading_map - shading_map.min()) /
+            (shading_map.max() - shading_map.min() + 1e-6) * 255,
+            0, 255
+        ).astype(np.uint8)
+
+        edges = cv2.Canny(norm, 30, 90)
+
+        # ---- 1. लांब सरळ रेषा शोधा ----
+        lines = cv2.HoughLinesP(
+            edges, 1, np.pi / 180, threshold=40,
+            minLineLength=min_line_length, maxLineGap=5
+        )
+
+        line_mask = np.zeros_like(norm)
+        if lines is not None:
+            for l in lines:
+                # NEW: OpenCV version नुसार lines चा shape (N,1,4) किंवा
+                # (N,4) असू शकतो -> flatten करून दोन्ही केसेस सुरक्षितपणे हाताळा
+                coords = np.array(l).flatten()
+                if coords.shape[0] < 4:
+                    continue
+                x1, y1, x2, y2 = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
+                cv2.line(line_mask, (x1, y1), (x2, y2), 255, thickness=6)
+
+        # ---- 2. लहान, वेगळे ठिपके शोधा (logo/emblem) ----
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
+        tophat = cv2.morphologyEx(norm, cv2.MORPH_TOPHAT, kernel)
+        blackhat = cv2.morphologyEx(norm, cv2.MORPH_BLACKHAT, kernel)
+        blob_mask = cv2.threshold(
+            cv2.add(tophat, blackhat), 25, 255, cv2.THRESH_BINARY
+        )[1]
+
+        # ---- दोन्ही एकत्र करून neutral करा ----
+        suppress_mask = cv2.bitwise_or(line_mask, blob_mask)
+        suppress_mask = cv2.dilate(suppress_mask, np.ones((5, 5), np.uint8))
+        suppress_mask = cv2.GaussianBlur(
+            suppress_mask.astype(np.float32), (0, 0), 3
+        ) / 255.0
+
+        neutral = 1.0
+        result = shading_map * (1 - suppress_mask) + neutral * suppress_mask
+
+        return result
     ####################################################################
     # APPLY SHIRT MASK
     ####################################################################
@@ -880,23 +1044,34 @@ class FabricRenderer:
         # Step 3: Estimate how "busy" the original shirt print is.
         # ----------------------------------------------------------
 
-        busyness = self.estimate_shirt_busyness(
+        busyness, busyness_raw = self.estimate_shirt_busyness(  # बदललं
             person_image,
             shirt_mask
         )
 
-        print("Shirt busyness score:", busyness)
+        print("Shirt busyness score (normalized):", busyness)
+        print("Shirt busyness score (raw):", busyness_raw)  # NEW -- हे बघणं महत्त्वाचं
 
         # ----------------------------------------------------------
-        # Step 4: RTV structure extraction.
+        # NEW: मूळ शर्टाचाच खरा pattern-pitch शोधा -- नवीन फॅब्रिकचा
+        # pattern_repeat इथे वापरणं चुकीचं होतं (तो unrelated आहे)
         # ----------------------------------------------------------
+        shirt_pattern_pitch = self.estimate_shirt_pattern_pitch(
+            person_image,
+            shirt_mask
+        )
+
+        print("Estimated ORIGINAL shirt pattern pitch:", shirt_pattern_pitch)
 
         shading_map = self.extract_structure_map_rtv(
             person_image,
             shirt_mask,
-            pattern_repeat=pattern_repeat,
-            busyness=busyness
+            pattern_repeat=shirt_pattern_pitch,
+            busyness=busyness,
+            busyness_raw=busyness_raw  # NEW
         )
+
+
 
         # ----------------------------------------------------------
         # Step 5: Separate real folds (large_scale) from residual
@@ -909,6 +1084,16 @@ class FabricRenderer:
             busyness=busyness,
             large_fold_radius=25
         )
+
+        # NEW: warp साठी smooth (sharp होण्याआधीचा) height-field इथे जपून ठेवा
+        geometry_source = shading_map.copy()
+
+        # ----------------------------------------------------------
+        # NEW: सरळ रेषा (color-block seam) आणि logo/emblem काढा --
+        # periodicity-based methods ला हे सापडत नाहीत कारण ते
+        # aperiodic असूनही खरे fold नाहीत.
+        # ----------------------------------------------------------
+        shading_map = self.remove_straight_lines_and_blobs(shading_map)
 
         # ----------------------------------------------------------
         # Step 6: Edge-aware fold contrast enhancement.
@@ -929,6 +1114,12 @@ class FabricRenderer:
             str(DEBUG_FOLDER / "debug_3_rtv_shading_map6.png"),
             np.clip(shading_map * 127, 0, 255).astype(np.uint8)
         )
+
+        # NEW: fabric ला खऱ्या fold प्रमाणे वाकवा/दाबा (brightness च्या आधी)
+        dx, dy = self.compute_fold_displacement_field(
+            geometry_source, strength=8.0, smooth_sigma=4
+        )
+        realistic_fabric = self.apply_fold_displacement(realistic_fabric, dx, dy)
 
         # ----------------------------------------------------------
         # Step 7: Apply shading on the Lab L-channel only
@@ -959,25 +1150,25 @@ class FabricRenderer:
         # Step 9: Buttons.
         # ----------------------------------------------------------
 
-        buttons = self.detect_buttons(person_image, shirt_mask)
-        print("Buttons found:", len(buttons))
+        # buttons = self.detect_buttons(person_image, shirt_mask)
+        # print("Buttons found:", len(buttons))
 
-        for (bx, by, br) in buttons:
-            output = self.draw_synthetic_button(output, bx, by, br)
+        # for (bx, by, br) in buttons:
+        #     output = self.draw_synthetic_button(output, bx, by, br)
 
         # ----------------------------------------------------------
         # Step 10: Pocket outline.
         # ----------------------------------------------------------
 
-        pocket_contours = self.detect_pocket_outline(person_image, shirt_mask)
-        print("Pocket candidates found:", len(pocket_contours))
+        # pocket_contours = self.detect_pocket_outline(person_image, shirt_mask)
+        # print("Pocket candidates found:", len(pocket_contours))
 
-        output = self.draw_pocket_outline(output, pocket_contours)
+        # output = self.draw_pocket_outline(output, pocket_contours)
 
         # ----------------------------------------------------------
         # NEW: Placket line आणि shoulder seam जोडा
         # ----------------------------------------------------------
-        output = self.draw_placket_line(output, shirt_mask)
-        output = self.draw_shoulder_seam(output, shirt_mask, shoulder_frac=0.06)
+        # output = self.draw_placket_line(output, shirt_mask)
+        # output = self.draw_shoulder_seam(output, shirt_mask, shoulder_frac=0.06)
 
         return output
