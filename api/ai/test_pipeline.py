@@ -24,7 +24,7 @@ PERSON_IMAGE = f"{BASE_DIR}/test_images/person17.jpg"
 
 FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/test_fabrics/lines_vertical6.jpg"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/output_tests_fabrics/fabric_output1419.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/output_tests_fabrics/fabric_output1433.jpg"
 
 # ----------------------------------------------------------
 # Initialize Pipeline

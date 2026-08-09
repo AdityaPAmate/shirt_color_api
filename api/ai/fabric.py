@@ -50,6 +50,8 @@ from api.ai.virtual_fabric import VirtualFabric
 from pathlib import Path
 from api.ai.rtv_smoothing import extract_rtv_structure
 from api.ai.fabric_analyzer import FabricAnalyzer
+from api.ai.fabric_geometry_warp import FabricGeometryWarp
+from api.ai.pattern_scale_estimator import PatternScaleEstimator
 
 
 class FabricRenderer:
@@ -69,6 +71,8 @@ class FabricRenderer:
         """
         self.virtual_fabric = VirtualFabric()
         self.fabric_analyzer = FabricAnalyzer()   ## NEW -- मूळ शर्टाचा pattern शोधण्यासाठी
+        self.geometry_warp = FabricGeometryWarp()
+        self.pattern_scale_estimator = PatternScaleEstimator()
 
         ####################################################################
     # INPUT VALIDATION
@@ -340,7 +344,9 @@ class FabricRenderer:
             shirt_mask,
             pattern_repeat=None,
             busyness=0.0,
-            busyness_raw=0.0
+            busyness_raw=0.0,
+            rtv_sigma_override=None,  # NEW
+            rtv_lam_override=None  # NEW
     ):
         mask = (shirt_mask > 0).astype(np.uint8)
         ys, xs = np.where(mask > 0)
@@ -379,12 +385,21 @@ class FabricRenderer:
         # या शर्टावरून सिद्ध झालं -- त्यामुळे आता आकारावर (size)
         # आधारित, हमखास काम करणारा floor वापरतोय.
         # ----------------------------------------------------------
-        size_floor_sigma = shirt_width_px * 0.035
-        size_floor_lam = 0.030
+        size_floor_sigma = shirt_width_px * 0.08
+        size_floor_lam = 0.050
 
         sigma = max(sigma, size_floor_sigma)
         lam = max(lam, size_floor_lam)
 
+        # NEW: PatternScaleEstimator कडून आलेला radius - फक्त वाढवतो, कमी करत नाही
+        if rtv_sigma_override is not None:
+            sigma = max(sigma, rtv_sigma_override)
+        if rtv_lam_override is not None:
+            lam = max(lam, rtv_lam_override)
+
+        # बदललं: print आता override लागू झाल्यानंतर -- आधी override च्या
+        # आधीचीच (चुकीची, कमी) value दाखवत होता, प्रत्यक्ष वापरलेली sigma
+        # कधीच लॉगमध्ये दिसत नव्हती
         print(f"Shirt width (px): {shirt_width_px}")
         print(f"RTV params -> sigma: {sigma:.2f}, lam: {lam:.4f}")
 
@@ -1063,26 +1078,29 @@ class FabricRenderer:
 
         print("Estimated ORIGINAL shirt pattern pitch:", shirt_pattern_pitch)
 
+        # NEW: एकच सुसंगत scale-context - RTV, fold-separation, geometry-warp
+        # तिघांनाही इथूनच numbers मिळतील
+        scale_context = self.pattern_scale_estimator.estimate_shirt_scale_context(
+            shirt_mask,
+            pattern_pitch_x=shirt_pattern_pitch,
+            pattern_pitch_y=None
+        )
+        print("Pattern scale context:", scale_context)
+
         shading_map = self.extract_structure_map_rtv(
             person_image,
             shirt_mask,
             pattern_repeat=shirt_pattern_pitch,
             busyness=busyness,
-            busyness_raw=busyness_raw  # NEW
+            busyness_raw=busyness_raw,
+            rtv_sigma_override=scale_context["rtv_sigma"],  # NEW
+            rtv_lam_override=scale_context["rtv_lam"]  # NEW
         )
-
-
-
-        # ----------------------------------------------------------
-        # Step 5: Separate real folds (large_scale) from residual
-        # print-leak texture (fine_residual); only suppress the
-        # latter, based on busyness.
-        # ----------------------------------------------------------
 
         shading_map = self.separate_real_folds_from_texture(
             shading_map,
             busyness=busyness,
-            large_fold_radius=25
+            large_fold_radius=int(scale_context["large_fold_radius"])  # बदललं: fixed 25 ऐवजी
         )
 
         # NEW: warp साठी smooth (sharp होण्याआधीचा) height-field इथे जपून ठेवा
@@ -1115,11 +1133,14 @@ class FabricRenderer:
             np.clip(shading_map * 127, 0, 255).astype(np.uint8)
         )
 
-        # NEW: fabric ला खऱ्या fold प्रमाणे वाकवा/दाबा (brightness च्या आधी)
-        dx, dy = self.compute_fold_displacement_field(
-            geometry_source, strength=8.0, smooth_sigma=4
+        # NEW: shirt_pattern_pitch आधीच वरती (RTV साठी) काढलेला आहे - तोच
+        # इथे reuse करतो, परत काढत नाही
+        dx, dy = self.geometry_warp.compute_displacement_field(
+            geometry_source,
+            shirt_mask,
+            pattern_pitch=shirt_pattern_pitch
         )
-        realistic_fabric = self.apply_fold_displacement(realistic_fabric, dx, dy)
+        realistic_fabric = self.geometry_warp.apply(realistic_fabric, dx, dy)
 
         # ----------------------------------------------------------
         # Step 7: Apply shading on the Lab L-channel only

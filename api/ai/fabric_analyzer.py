@@ -486,9 +486,13 @@ class FabricAnalyzer:
         print("Detected Peaks :", significant)
         print("Selected Repeat :", max(significant))
 
-        if len(significant) < 2:
-            return None
-
+        # बदललं: आधी किमान 2 peaks लागायचे (noise टाळण्यासाठी) - पण काही
+        # check/plaid पॅटर्नवर autocorrelation मध्ये फक्त 1 च, पण मजबूत
+        # (आधीच correlation.max()*0.75 threshold च्या वर) peak सापडतो, आणि तो
+        # legitimate असूनही नाकारला जात होता. यामुळे pitch चुकीने None आला,
+        # आणि पुढे संपूर्ण pattern-scale logic चुकीच्या "fallback" मार्गाने
+        # गेली (PatternScaleEstimator मधला "confidence: fallback" हेच दाखवत
+        # होता). 1 मजबूत peak सुद्धा आता वैध मानतो.
         return int(significant[-1])
 
     ####################################################################
@@ -599,9 +603,6 @@ class FabricAnalyzer:
             return None
 
         significant = sorted(peaks)
-
-        if len(significant) < 2:
-            return None
 
         print("Detected Y-Peaks :", significant)
         print("Selected Y-Repeat :", max(significant))
