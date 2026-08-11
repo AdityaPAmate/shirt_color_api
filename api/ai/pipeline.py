@@ -21,6 +21,15 @@ Advantages
 3. Future frontend integration
 4. Reusable architecture
 5. Single responsibility
+
+CHANGELOG
+---------
+NEW: Added garment_type support ("shirt" / "kurta").
+     SAM still detects/segments the SHIRT only (detection logic
+     unchanged). After segmentation, GarmentTemplate converts the
+     shirt mask into the requested garment's mask (Kurta = shirt
+     mask extended downward). Fabric rendering then runs on
+     whichever mask corresponds to garment_type.
 """
 
 import os
@@ -31,6 +40,8 @@ from api.ai.segmenter import ShirtSegmenter
 from api.ai.fabric import FabricRenderer
 from api.ai.fabric_analyzer import FabricAnalyzer
 from api.ai.pattern_scale_estimator import PatternScaleEstimator
+from api.ai.garment_template import GarmentTemplate
+from pathlib import Path
 
 
 class ShirtPipeline:
@@ -47,7 +58,10 @@ class ShirtPipeline:
         GroundingDINO
               │
               ▼
-          SAM 2.1
+          SAM 2.1  (Shirt Mask)
+              │
+              ▼
+      Garment Template  (Shirt Mask -> Shirt/Kurta Mask)
               │
               ▼
       Fabric Rendering
@@ -92,6 +106,12 @@ class ShirtPipeline:
         # ----------------------------------------------------------
         self.fabric_renderer = FabricRenderer()
 
+        # ----------------------------------------------------------
+        # NEW: Converts the SAM shirt mask into the requested
+        # garment's mask (currently: shirt as-is, or kurta).
+        # ----------------------------------------------------------
+        self.garment_template = GarmentTemplate()
+
         print("All AI Models Loaded Successfully.")
 
     ####################################################################
@@ -103,7 +123,8 @@ class ShirtPipeline:
         person_image_path,
         fabric_image_path,
         output_path,
-        fabric_mode="tile"
+        fabric_mode="tile",
+        garment_type="shirt"
     ):
         """
         Complete fabric replacement pipeline.
@@ -119,9 +140,13 @@ class ShirtPipeline:
         output_path : str
             Output image path.
 
-        use_tiling : bool
-            True  -> Repeat fabric pattern.
-            False -> Stretch fabric.
+        fabric_mode : str
+            "tile" -> Repeat fabric pattern.
+            "fit"  -> Stretch fabric.
+
+        garment_type : str
+            "shirt" -> use SAM shirt mask as-is.
+            "kurta" -> extend SAM shirt mask into a basic Kurta mask.
 
         Returns
         -------
@@ -129,9 +154,16 @@ class ShirtPipeline:
             Output image path.
         """
 
+        BASE_DIR = Path(__file__).resolve().parents[2]
+
+        DEBUG_FOLDER = BASE_DIR / "test_images" / "debug"
+
+        DEBUG_FOLDER.mkdir(parents=True, exist_ok=True)
+
         print("\n====================================")
         print("Starting Fabric Replacement Pipeline")
         print("====================================")
+        print("Garment Type :", garment_type)
 
         ############################################################
         # STEP 1
@@ -159,6 +191,24 @@ class ShirtPipeline:
         )
 
         print("Mask Generated Successfully")
+
+        ############################################################
+        # STEP 2.5 (NEW) : Shirt Mask -> Requested Garment Mask
+        ############################################################
+
+        print("\nStep 2.5 : Prepare Garment Mask (", garment_type, ")")
+
+        garment_mask = self.garment_template.get_garment_mask(
+            shirt_mask,
+            garment_type=garment_type
+        )
+
+        print("Garment Mask Ready")
+
+        cv2.imwrite(
+            str(DEBUG_FOLDER/"debug_garment_mask.png" ),
+            (garment_mask.astype("uint8") * 255) if garment_mask.dtype == bool else garment_mask
+        )
 
         ############################################################
         # STEP 3
@@ -234,7 +284,7 @@ class ShirtPipeline:
 
         result = self.fabric_renderer.render(
             person_image=person_image,
-            shirt_mask=shirt_mask,
+            shirt_mask=garment_mask,
             fabric_info=fabric_info,
             fabric_mode=fabric_mode
         )

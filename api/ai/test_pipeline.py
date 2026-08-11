@@ -20,11 +20,20 @@ print(BASE_DIR)
 # Input Files
 # ----------------------------------------------------------
 
-PERSON_IMAGE = f"{BASE_DIR}/test_images/person12.jpg"
+PERSON_IMAGE = f"{BASE_DIR}/test_images/person13.jpeg"
 
-FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/plain_green_fabric.jpg"
+FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/floral_fabric7.png"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/test_images/fabric_output_r1231fit.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_35.jpg"
+
+# ----------------------------------------------------------
+# Garment Type
+#
+# "shirt" -> मूळ SAM shirt mask जसाच्या तसा वापरला जातो.
+# "kurta" -> shirt mask वरून rule-based Kurta mask तयार होतो.
+# ----------------------------------------------------------
+
+GARMENT_TYPE = "kurta"
 
 # ----------------------------------------------------------
 # Initialize Pipeline
@@ -40,7 +49,8 @@ pipeline.replace_fabric(
     person_image_path=PERSON_IMAGE,
     fabric_image_path=FABRIC_IMAGE,
     output_path=OUTPUT_IMAGE,
-    fabric_mode="fit"
+    fabric_mode="fit",
+    garment_type=GARMENT_TYPE
 )
 
 print("\nTesting Completed Successfully.")
