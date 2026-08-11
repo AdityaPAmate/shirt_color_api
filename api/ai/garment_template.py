@@ -195,10 +195,10 @@ class GarmentTemplate:
     def shirt_to_kurta_mask(
         self,
         shirt_mask,
-        extend_height_ratio=0.45,
+        extend_height_ratio=0.40,
         start_offset_ratio=0.05,
         max_side_growth_ratio=0.11,
-        bottom_curve_ratio=0.14,
+        bottom_curve_ratio=0.12,
     ):
         """
         Convert shirt mask -> Kurta mask.
@@ -349,10 +349,10 @@ class GarmentTemplate:
         if garment_type.lower() == "kurta":
             return self.shirt_to_kurta_mask(
                 shirt_mask,
-                extend_height_ratio=0.45,
+                extend_height_ratio=0.40,
                 start_offset_ratio=0.05,
                 max_side_growth_ratio=0.11,
-                bottom_curve_ratio=0.14,
+                bottom_curve_ratio=0.12,
             )
 
         return shirt_mask

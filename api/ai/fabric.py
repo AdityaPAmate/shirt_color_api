@@ -799,7 +799,7 @@ class FabricRenderer:
             person_image,
             shirt_mask,
             fabric_info,
-            fabric_mode="tile"
+            garment_type=""
     ):
         """
         Complete fabric rendering pipeline.
@@ -829,7 +829,7 @@ class FabricRenderer:
 
         fabric_image = fabric_info["original_fabric"]
         cv2.imwrite(
-            str(DEBUG_FOLDER / "debug_0_prepared_fabric2.png"),
+            str(DEBUG_FOLDER / "debug_0_before_prepared_fabric2.png"),
             fabric_image
         )
 
@@ -857,7 +857,7 @@ class FabricRenderer:
         print("prepared dtype:", prepared_fabric.dtype)
 
         cv2.imwrite(
-            str(DEBUG_FOLDER / "debug_1_prepared_fabric2.png"),
+            str(DEBUG_FOLDER / "debug_1_after_prepared_fabric2.png"),
             prepared_fabric
         )
 
@@ -880,70 +880,83 @@ class FabricRenderer:
         # Step 3: Estimate how "busy" the original shirt print is.
         # ----------------------------------------------------------
 
-        busyness = self.estimate_shirt_busyness(
-            person_image,
-            shirt_mask
-        )
+        if garment_type == 'shirt':
+            busyness = self.estimate_shirt_busyness(
+                person_image,
+                shirt_mask
+            )
 
-        print("Shirt busyness score:", busyness)
+            print("Shirt busyness score:", busyness)
 
-        # ----------------------------------------------------------
-        # Step 4: RTV structure extraction.
-        # ----------------------------------------------------------
+            # ----------------------------------------------------------
+            # Step 4: RTV structure extraction.
+            # ----------------------------------------------------------
 
-        shading_map = self.extract_structure_map_rtv(
-            person_image,
-            shirt_mask,
-            pattern_repeat=pattern_repeat,
-            busyness=busyness
-        )
+            shading_map = self.extract_structure_map_rtv(
+                person_image,
+                shirt_mask,
+                pattern_repeat=pattern_repeat,
+                busyness=busyness
+            )
 
-        # ----------------------------------------------------------
-        # Step 5: Separate real folds (large_scale) from residual
-        # print-leak texture (fine_residual); only suppress the
-        # latter, based on busyness.
-        # ----------------------------------------------------------
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_2.1_after_RVT.png"),
+                shading_map
+            )
 
-        shading_map = self.separate_real_folds_from_texture(
-            shading_map,
-            busyness=busyness,
-            large_fold_radius=25
-        )
+            # ----------------------------------------------------------
+            # Step 5: Separate real folds (large_scale) from residual
+            # print-leak texture (fine_residual); only suppress the
+            # latter, based on busyness.
+            # ----------------------------------------------------------
 
-        # ----------------------------------------------------------
-        # Step 6: Edge-aware fold contrast enhancement.
-        # ----------------------------------------------------------
+            shading_map = self.separate_real_folds_from_texture(
+                shading_map,
+                busyness=busyness,
+                large_fold_radius=25
+            )
 
-        shading_map = self.enhance_fold_contrast(
-            shading_map,
-            edge_gain=2.3,
-            smooth_sigma=5
-        )
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_2.2_after_seperate_fold_from_structure.png"),
+                shading_map
+            )
 
-        print(
-            "Shading map range after enhancement:",
-            shading_map.min(), shading_map.max(), shading_map.std()
-        )
+            # ----------------------------------------------------------
+            # Step 6: Edge-aware fold contrast enhancement.
+            # ----------------------------------------------------------
 
-        cv2.imwrite(
-            str(DEBUG_FOLDER / "debug_3_rtv_shading_map6.png"),
-            np.clip(shading_map * 127, 0, 255).astype(np.uint8)
-        )
+            shading_map = self.enhance_fold_contrast(
+                shading_map,
+                edge_gain=2.3,
+                smooth_sigma=5
+            )
 
-        # ----------------------------------------------------------
-        # Step 7: Apply shading on the Lab L-channel only
-        # (highlight-safe).
-        # ----------------------------------------------------------
+            print(
+                "Shading map range after enhancement:",
+                shading_map.min(), shading_map.max(), shading_map.std()
+            )
 
-        realistic_fabric = self.apply_structure_map_lab(
-            realistic_fabric,
-            shading_map
-        )
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_3_rtv_shading_map6.png"),
+                np.clip(shading_map * 127, 0, 255).astype(np.uint8)
+            )
 
-        cv2.imwrite(
-            str(DEBUG_FOLDER / "debug_4_after_realistic_fabric2.png"),
-            realistic_fabric
-        )
+
+
+            # ----------------------------------------------------------
+            # Step 7: Apply shading on the Lab L-channel only
+            # (highlight-safe).
+            # ----------------------------------------------------------
+
+            realistic_fabric = self.apply_structure_map_lab(
+                realistic_fabric,
+                shading_map
+            )
+
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_4_after_realistic_fabric2.png"),
+                realistic_fabric
+            )
 
         # ----------------------------------------------------------
         # Step 8: Replace only the shirt region.

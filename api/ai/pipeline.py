@@ -286,7 +286,7 @@ class ShirtPipeline:
             person_image=person_image,
             shirt_mask=garment_mask,
             fabric_info=fabric_info,
-            fabric_mode=fabric_mode
+            garment_type= garment_type
         )
 
         print("Fabric Rendering Completed")
