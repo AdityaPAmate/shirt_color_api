@@ -123,7 +123,6 @@ class ShirtPipeline:
         person_image_path,
         fabric_image_path,
         output_path,
-        fabric_mode="tile",
         garment_type="shirt"
     ):
         """
@@ -179,6 +178,24 @@ class ShirtPipeline:
         print("Bounding Box :", detection["box"])
         print("Confidence   :", detection["confidence"])
 
+        # Save detected shirt bounding box for debugging
+        debug_detection = cv2.imread(person_image_path).copy()
+
+        x1, y1, x2, y2 = map(int, detection["box"])
+
+        cv2.rectangle(
+            debug_detection,
+            (x1, y1),
+            (x2, y2),
+            (0, 255, 0),
+            2
+        )
+
+        cv2.imwrite(
+            str(DEBUG_FOLDER / "debug_0.1_detected_shirt.png"),
+            debug_detection
+        )
+
         ############################################################
         # STEP 2
         ############################################################
@@ -191,6 +208,13 @@ class ShirtPipeline:
         )
 
         print("Mask Generated Successfully")
+
+        debug_mask = (shirt_mask > 0).astype("uint8") * 255
+
+        cv2.imwrite(
+            str(DEBUG_FOLDER / "debug_0.2_shirt_mask.png"),
+            debug_mask
+        )
 
         ############################################################
         # STEP 2.5 (NEW) : Shirt Mask -> Requested Garment Mask

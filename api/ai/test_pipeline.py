@@ -20,11 +20,11 @@ print(BASE_DIR)
 # Input Files
 # ----------------------------------------------------------
 
-PERSON_IMAGE = f"{BASE_DIR}/test_images/person18.jpeg"
+PERSON_IMAGE = f"{BASE_DIR}/test_images/person16.jpeg"
 
-FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/test_fabrics/design_green41.png"
+FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/test_fabrics/floral_fabric2.png"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_44.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_50.jpg"
 
 # ----------------------------------------------------------
 # Garment Type
@@ -49,7 +49,6 @@ pipeline.replace_fabric(
     person_image_path=PERSON_IMAGE,
     fabric_image_path=FABRIC_IMAGE,
     output_path=OUTPUT_IMAGE,
-    fabric_mode="fit",
     garment_type=GARMENT_TYPE
 )
 

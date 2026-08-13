@@ -853,6 +853,8 @@ class FabricRenderer:
             repeat_size_y=pattern_repeat_y
         )
 
+
+
         print("After prepare:", prepared_fabric.shape)
         print("prepared dtype:", prepared_fabric.dtype)
 
