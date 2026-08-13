@@ -310,7 +310,9 @@ class ShirtPipeline:
             person_image=person_image,
             shirt_mask=garment_mask,
             fabric_info=fabric_info,
-            garment_type= garment_type
+            garment_type= garment_type,
+            box=detection["box"]
+
         )
 
         print("Fabric Rendering Completed")

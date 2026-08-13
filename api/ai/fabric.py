@@ -49,6 +49,7 @@ import numpy as np
 from api.ai.virtual_fabric import VirtualFabric
 from pathlib import Path
 from api.ai.rtv_smoothing import extract_rtv_structure
+from api.ai.fabric_downsampling import fit_fabric_to_bbox
 
 
 class FabricRenderer:
@@ -799,7 +800,8 @@ class FabricRenderer:
             person_image,
             shirt_mask,
             fabric_info,
-            garment_type=""
+            garment_type,
+            box,
     ):
         """
         Complete fabric rendering pipeline.
@@ -845,15 +847,20 @@ class FabricRenderer:
         # Step 1: Period-aligned seamless tiling (VirtualFabric)
         # ----------------------------------------------------------
 
-        prepared_fabric = self.prepare_fabric(
+        # prepared_fabric = self.prepare_fabric(
+        #     fabric_image=fabric_image,
+        #     target_width=person_image.shape[1],
+        #     target_height=person_image.shape[0],
+        #     repeat_size=pattern_repeat,
+        #     repeat_size_y=pattern_repeat_y
+        # )
+        print("Fabric is preparing ...........")
+        prepared_fabric=fit_fabric_to_bbox(
+            person_image= person_image,
             fabric_image=fabric_image,
-            target_width=person_image.shape[1],
-            target_height=person_image.shape[0],
-            repeat_size=pattern_repeat,
-            repeat_size_y=pattern_repeat_y
+            groundingdino_bbox_xyxy=box
         )
-
-
+        print("Fabric is prepared 🧣👍")
 
         print("After prepare:", prepared_fabric.shape)
         print("prepared dtype:", prepared_fabric.dtype)
@@ -974,25 +981,25 @@ class FabricRenderer:
         # Step 9: Buttons.
         # ----------------------------------------------------------
 
-        buttons = self.detect_buttons(person_image, shirt_mask)
-        print("Buttons found:", len(buttons))
-
-        for (bx, by, br) in buttons:
-            output = self.draw_synthetic_button(output, bx, by, br)
+        # buttons = self.detect_buttons(person_image, shirt_mask)
+        # print("Buttons found:", len(buttons))
+        #
+        # for (bx, by, br) in buttons:
+        #     output = self.draw_synthetic_button(output, bx, by, br)
 
         # ----------------------------------------------------------
         # Step 10: Pocket outline.
         # ----------------------------------------------------------
 
-        pocket_contours = self.detect_pocket_outline(person_image, shirt_mask)
-        print("Pocket candidates found:", len(pocket_contours))
+        # pocket_contours = self.detect_pocket_outline(person_image, shirt_mask)
+        # print("Pocket candidates found:", len(pocket_contours))
 
-        output = self.draw_pocket_outline(output, pocket_contours)
+        # output = self.draw_pocket_outline(output, pocket_contours)
 
         # ----------------------------------------------------------
         # NEW: Placket line आणि shoulder seam जोडा
         # ----------------------------------------------------------
-        output = self.draw_placket_line(output, shirt_mask)
-        output = self.draw_shoulder_seam(output, shirt_mask, shoulder_frac=0.06)
+        # output = self.draw_placket_line(output, shirt_mask)
+        # output = self.draw_shoulder_seam(output, shirt_mask, shoulder_frac=0.06)
 
         return output
