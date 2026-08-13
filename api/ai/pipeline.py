@@ -30,10 +30,19 @@ NEW: Added garment_type support ("shirt" / "kurta").
      shirt mask into the requested garment's mask (Kurta = shirt
      mask extended downward). Fabric rendering then runs on
      whichever mask corresponds to garment_type.
+NEW: person_image is now read EARLIER (right after Step 1), because
+     Step 2.6 (bbox from garment_mask) needs person_image.shape to
+     clamp the padded bbox -- it used to be read later in Step 3,
+     which caused an "unresolved reference" (used before assignment)
+     error. Step 3 no longer re-reads it.
+NEW: Step 4 now passes box=fabric_fit_box (the garment_mask-based
+     box) instead of box=detection["box"] -- passing the old shirt
+     box here was defeating the whole point of Step 2.6.
 """
 
 import os
 import cv2
+import numpy as np
 
 from api.ai.detector import ShirtDetector
 from api.ai.segmenter import ShirtSegmenter
@@ -178,8 +187,21 @@ class ShirtPipeline:
         print("Bounding Box :", detection["box"])
         print("Confidence   :", detection["confidence"])
 
+        # ----------------------------------------------------------
+        # NEW (moved up): read person_image here, right after
+        # detection, instead of later in Step 3. Step 2.6 (below)
+        # needs person_image.shape to clamp the padded bbox, so it
+        # must exist before Step 2.6 runs.
+        # ----------------------------------------------------------
+        person_image = cv2.imread(person_image_path)
+
+        if person_image is None:
+            raise ValueError(
+                f"Unable to read person image : {person_image_path}"
+            )
+
         # Save detected shirt bounding box for debugging
-        debug_detection = cv2.imread(person_image_path).copy()
+        debug_detection = person_image.copy()
 
         x1, y1, x2, y2 = map(int, detection["box"])
 
@@ -235,12 +257,60 @@ class ShirtPipeline:
         )
 
         ############################################################
+        # STEP 2.6 (NEW) : Garment Mask वरून योग्य bbox काढा
+        #
+        # detection["box"] हा फक्त "shirt" साठीचा GroundingDINO box
+        # आहे. Kurta साठी mask खाली-बाजूला जास्त पसरलेला असतो, पण
+        # आपण अजूनही तोच जुना (छोटा) shirt-box fabric fit साठी वापरत
+        # होतो -> त्यामुळे extend झालेला भाग काळा राहत होता.
+        #
+        # इथे थेट garment_mask च्या पांढऱ्या pixels वरून नवीन bbox
+        # काढतो, आणि segmentation च्या काठावरच्या छोट्या चुका
+        # झाकण्यासाठी सगळ्या बाजूंनी 8 pixel चा सुरक्षित margin जोडतो.
+        #
+        # (person_image आता वर, Step 1 नंतर लगेच वाचला गेला आहे,
+        # त्यामुळे इथे तो वापरता येतो.)
+        ############################################################
+
+        mask_ys, mask_xs = np.where(garment_mask > 0)
+
+        # tight (0 margin) bounding box -- mask च्या शेवटच्या pixel ला टेकून
+        tight_x1 = int(mask_xs.min())
+        tight_y1 = int(mask_ys.min())
+        tight_x2 = int(mask_xs.max())
+        tight_y2 = int(mask_ys.max())
+
+        # सगळ्या बाजूंनी किती extra margin (pixels) जोडायचा
+        BBOX_MARGIN = 8
+
+        # margin जोडा, आणि person image च्या सीमेत clamp करा
+        # (नाहीतर bbox image च्या बाहेर जाऊन नंतरचा safety-check fail होईल)
+        person_h, person_w = person_image.shape[:2]
+
+        padded_x1 = max(0, tight_x1 - BBOX_MARGIN)
+        padded_y1 = max(0, tight_y1 - BBOX_MARGIN)
+        padded_x2 = min(person_w - 1, tight_x2 + BBOX_MARGIN)
+        padded_y2 = min(person_h - 1, tight_y2 + BBOX_MARGIN)
+
+        fabric_fit_box = [
+            float(padded_x1),
+            float(padded_y1),
+            float(padded_x2),
+            float(padded_y2)
+        ]
+
+        print("\nTight box (from garment_mask)   :", [tight_x1, tight_y1, tight_x2, tight_y2])
+        print("Fabric-fit box (with 8px margin) :", fabric_fit_box)
+
+        ############################################################
         # STEP 3
         ############################################################
 
         print("\nStep 3 : Read Images")
 
-        person_image = cv2.imread(person_image_path)
+        # NOTE: person_image यापूर्वीच (Step 1 नंतर) वाचला गेला आहे,
+        # त्यामुळे इथे परत cv2.imread(person_image_path) करायची
+        # गरज नाही -- duplicate read काढला.
 
         fabric_image = cv2.imread(fabric_image_path)
 
@@ -277,20 +347,12 @@ class ShirtPipeline:
 
         print("===================================\n")
 
-        # Use the normalized fabric returned by FabricAnalyzer
-        fabric_image = cv2.imread(fabric_image_path)
-
         print("\n========== Fabric Information ==========")
 
         for key, value in fabric_info.items():
             print(f"{key} : {value}")
 
         print("========================================\n")
-
-        if person_image is None:
-            raise ValueError(
-                f"Unable to read person image : {person_image_path}"
-            )
 
         if fabric_image is None:
             raise ValueError(
@@ -311,7 +373,7 @@ class ShirtPipeline:
             shirt_mask=garment_mask,
             fabric_info=fabric_info,
             garment_type= garment_type,
-            box=detection["box"]
+            box=fabric_fit_box
 
         )
 
