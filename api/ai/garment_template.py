@@ -81,6 +81,8 @@ class GarmentTemplate:
             return None
 
         runs = self._row_runs(mask_bin[y])
+        print('Runs are: ', runs)
+        print()
 
         if not runs:
             return None
@@ -222,6 +224,7 @@ class GarmentTemplate:
 
         mask_bin = (shirt_mask > 0).astype(np.uint8)
         mask_bin = self._largest_component(mask_bin)
+        """<----- here largest connected component returned and now mask bin contain cleaned/main shirt component """
 
         ys = np.where(mask_bin > 0)[0]
 
@@ -266,7 +269,7 @@ class GarmentTemplate:
 
         # ---------------------------------------------------------
         # 4. खरी hem width (काही rows चा median घेऊन स्थिर करणे).
-        # ---------------------------------------------------------
+        # -------------------x--------------------------------------
         base_left = reference_run[0]
         base_right = reference_run[1]
 
@@ -295,7 +298,6 @@ class GarmentTemplate:
         # ---------------------------------------------------------
         extend_px = max(1, int(round(shirt_height * extend_height_ratio)))
         new_bottom = min(img_height - 1, y_bottom + extend_px)
-
         # ---------------------------------------------------------
         # 6. FIXED: growth आता base_width च्या ratio नुसार, pixels
         # मध्ये convert करून घेतो -> कुठल्याही resolution वर
