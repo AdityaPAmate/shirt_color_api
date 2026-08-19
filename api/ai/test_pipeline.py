@@ -20,11 +20,11 @@ print(BASE_DIR)
 # Input Files
 # ----------------------------------------------------------
 
-PERSON_IMAGE = f"{BASE_DIR}/test_images/person12.jpg"
+PERSON_IMAGE = f"{BASE_DIR}/test_images/person23.jpg"
 
 FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/test_fabrics/kurta_fabric3.jpg"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_72.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_95.jpg"
 
 # ----------------------------------------------------------
 # Garment Type

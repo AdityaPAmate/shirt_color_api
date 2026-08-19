@@ -18,7 +18,7 @@ from PIL import Image
 # ----------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-PERSON_IMAGE = f"{BASE_DIR}/test_images/person4.jpeg"
+PERSON_IMAGE = f"{BASE_DIR}/test_images/person19.jpg"
 
 # TODO: तुम्ही सांगितलेली output location इथे टाका
 MASKS_OUTPUT_DIR = f"{BASE_DIR}/test_images/human_parser_masks"
