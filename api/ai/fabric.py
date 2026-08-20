@@ -50,6 +50,7 @@ from api.ai.virtual_fabric import VirtualFabric
 from pathlib import Path
 from api.ai.rtv_smoothing import extract_rtv_structure
 from api.ai.fabric_downsampling import fit_fabric_to_bbox
+from api.ai.fabric_analyzer import FabricAnalyzer
 
 
 class FabricRenderer:
@@ -68,8 +69,9 @@ class FabricRenderer:
         Initialize helper classes.
         """
         self.virtual_fabric = VirtualFabric()
+        self.fabric_analyzer = FabricAnalyzer()
 
-    ####################################################################
+        ####################################################################
     # INPUT VALIDATION
     ####################################################################
 
@@ -177,6 +179,32 @@ class FabricRenderer:
     # multiplier and blows out light-coloured fabrics to white.
     # Kept here for reference / possible future use.
     ####################################################################
+
+    def estimate_original_shirt_pattern_repeat(self, person_image, shirt_mask):
+        """
+        अपलोड केलेल्या नवीन fabric ऐवजी, व्यक्तीच्या ORIGINAL फोटोतल्या
+        शर्टाचा स्वतःचा checks/lines repeat किती pixel चा आहे ते मोजतो.
+        RTV चा sigma याच नंबरवरून ठरायला हवा -- नवीन fabric शी संबंध नाही.
+        """
+        mask_bin = (shirt_mask > 0).astype(np.uint8)
+        ys, xs = np.where(mask_bin > 0)
+        if len(ys) == 0:
+            return None, None
+
+        y0, y1 = ys.min(), ys.max() + 1
+        x0, x1 = xs.min(), xs.max() + 1
+
+        crop = person_image[y0:y1, x0:x1].copy()
+        crop_mask = mask_bin[y0:y1, x0:x1]
+
+        # शर्ट नसलेला भाग inpaint करा (rtv_smoothing.py मध्ये आधीच वापरलेली तीच पद्धत)
+        non_shirt = (crop_mask == 0).astype(np.uint8) * 255
+        crop = cv2.inpaint(crop, non_shirt, 9, cv2.INPAINT_TELEA)
+
+        repeat_x = self.fabric_analyzer.detect_pattern_repeat(crop)
+        repeat_y = self.fabric_analyzer.detect_pattern_repeat_y(crop)
+
+        return repeat_x, repeat_y
 
     def preserve_lighting(
             self,
@@ -909,12 +937,26 @@ class FabricRenderer:
             # Step 4: RTV structure extraction.
             # ----------------------------------------------------------
 
+            # जुनं (चुकीचं):
+            # shading_map = self.extract_structure_map_rtv(
+            #     person_image, shirt_mask,
+            #     pattern_repeat=pattern_repeat,   # <- नवीन fabric चा repeat
+            #     busyness=busyness
+            # )
+
+            # नवीन (बरोबर):
+            orig_repeat_x, orig_repeat_y = self.estimate_original_shirt_pattern_repeat(
+                person_image, shirt_mask
+            )
+            print("Original shirt pattern repeat (x, y):", orig_repeat_x, orig_repeat_y)
+
             shading_map = self.extract_structure_map_rtv(
-                person_image,
-                shirt_mask,
-                pattern_repeat=pattern_repeat,
+                person_image, shirt_mask,
+                pattern_repeat=orig_repeat_x,  # <- आता मूळ शर्टाच्या checks वरून
                 busyness=busyness
             )
+
+
 
             cv2.imwrite(
                 str(DEBUG_FOLDER / "debug_2.1_after_RVT.png"),
