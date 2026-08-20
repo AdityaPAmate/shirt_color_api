@@ -486,8 +486,16 @@ class FabricRenderer:
 
         L_out = np.empty_like(L)
 
+        #newly added ----------------
+        shadow_strength = 2.9
+
         # गडद करताना (shading < 1) -> साधा multiply पुरेसा आहे
-        L_out[~brighten_mask] = L[~brighten_mask] * shading_map[~brighten_mask]
+        shadow_map = 1.0 - (1.0 - shading_map[~brighten_mask]) * shadow_strength
+        shadow_map = np.clip(shadow_map, 0.0, 1.0)
+
+        #---------------------------------------
+
+        L_out[~brighten_mask] = L[~brighten_mask] * shadow_map
 
         # उजळ करताना (shading >= 1) -> screen-style soft blend
         excess = shading_map[brighten_mask] - 1.0

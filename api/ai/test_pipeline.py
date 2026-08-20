@@ -20,11 +20,11 @@ print(BASE_DIR)
 # Input Files
 # ----------------------------------------------------------
 
-PERSON_IMAGE = f"{BASE_DIR}/test_images/person23.jpg"
+PERSON_IMAGE = f"{BASE_DIR}/test_images/person30.png"
 
-FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/test_fabrics/kurta_fabric3.jpg"
+FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/test_fabrics/design_green4.jpg"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_95.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_1135.jpg"
 
 # ----------------------------------------------------------
 # Garment Type
@@ -33,7 +33,7 @@ OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_95.jpg"
 # "kurta" -> shirt mask वरून rule-based Kurta mask तयार होतो.
 # ----------------------------------------------------------
 
-GARMENT_TYPE = "kurta"
+GARMENT_TYPE = "shirt"
 
 # ----------------------------------------------------------
 # Initialize Pipeline
