@@ -400,55 +400,59 @@ class FabricRenderer:
         )
         return shading_map
 
+        ####################################################################
+        # SHIRT BUSYNESS ESTIMATION
+        ####################################################################
+
+        def estimate_shirt_busyness_map(self, person_image, shirt_mask, window=15):
+            """
+            संपूर्ण शर्टासाठी एकच busyness नंबर ऐवजी, प्रत्येक pixel साठी
+            स्थानिक (local) busyness काढतो. यामुळे हात/कॉलर सारख्या
+            जास्त texture असलेल्या भागात आपोआप जास्त suppression लागू होतं,
+            आणि साध्या torso भागात कमी.
+            """
+            gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3).astype(np.float32)
+
+            mean = cv2.boxFilter(lap, -1, (window, window))
+            mean_sq = cv2.boxFilter(lap * lap, -1, (window, window))
+            local_std = np.sqrt(np.clip(mean_sq - mean * mean, 0, None))
+
+            busyness_map = np.clip(local_std / 40.0, 0.0, 1.0)
+
+            mask = (shirt_mask > 0).astype(np.float32)
+            return busyness_map * mask
+
     ####################################################################
     # SEPARATE REAL FOLDS FROM RESIDUAL TEXTURE
     ####################################################################
 
     def separate_real_folds_from_texture(
-            self,
-            shading_map,
-            busyness=0.0,
-            large_fold_radius=25
+            self, shading_map, busyness_map=None, busyness=0.0, large_fold_radius=25
     ):
-        """
-        Splits the RTV shading map into two bands:
-
-        1. large_scale   -> real folds/wrinkles/drape (extracted with
-                             an edge-preserving bilateral filter, NOT
-                             a plain Gaussian blur, so true fold
-                             ridges stay sharp instead of turning
-                             into soft blobs).
-        2. fine_residual -> whatever is left (mostly leftover print
-                             texture on busy shirts). Only this band
-                             is suppressed, based on busyness.
-
-        This keeps genuine fold detail intact while still removing
-        residual print leak on busy shirts.
-        """
-
         map_min, map_max = shading_map.min(), shading_map.max()
         norm = (shading_map - map_min) / (map_max - map_min + 1e-6)
         norm_u8 = (norm * 255).astype(np.uint8)
 
         large_scale_u8 = cv2.bilateralFilter(
-            norm_u8,
-            d=0,
-            sigmaColor=30,
-            sigmaSpace=large_fold_radius
+            norm_u8, d=0, sigmaColor=30, sigmaSpace=large_fold_radius
         )
-
         large_scale = (large_scale_u8.astype(np.float32) / 255.0) * \
                       (map_max - map_min) + map_min
 
         fine_residual = shading_map - large_scale
 
-        fine_blend = float(np.interp(busyness, [0.0, 1.0], [0.9, 0.10]))
-        fine_residual = fine_residual * fine_blend
+        if busyness_map is not None:
+            bm = cv2.resize(busyness_map, (shading_map.shape[1], shading_map.shape[0]))
+            # जास्त busy भागात जास्त suppress (कमी fine_blend), साध्या भागात कमी suppress
+            fine_blend_map = 0.9 - (0.9 - 0.10) * bm
+            fine_blend_map = np.clip(fine_blend_map, 0.10, 0.9)
+            fine_residual = fine_residual * fine_blend_map
+        else:
+            fine_blend = float(np.interp(busyness, [0.0, 1.0], [0.9, 0.10]))
+            fine_residual = fine_residual * fine_blend
 
-        result = large_scale + fine_residual
-
-        return result
-
+        return large_scale + fine_residual
     ####################################################################
     # ENHANCE FOLD CONTRAST (edge-aware unsharp masking)
     ####################################################################
@@ -537,31 +541,7 @@ class FabricRenderer:
 
         return result
 
-    ####################################################################
-    # SHIRT BUSYNESS ESTIMATION
-    ####################################################################
 
-    def estimate_shirt_busyness(self, person_image, shirt_mask):
-        """
-        मूळ शर्टाची प्रिंट किती गुंतागुंतीची (busy) आहे ते मोजतं.
-        जास्त busyness -> जास्त शक्यता की RTV मध्ये प्रिंट लीक होईल.
-        Returns: 0.0 (साधा/plain शर्ट) ते 1.0 (खूप busy प्रिंट)
-        """
-        gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY)
-        mask = (shirt_mask > 0).astype(np.uint8)
-
-        if mask.sum() == 0:
-            return 0.0
-
-        lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3)
-        lap_masked = lap[mask > 0]
-
-        busyness = np.std(lap_masked)
-
-        # हे threshold तुमच्या test images वर calibrate करा
-        busyness_norm = float(np.clip(busyness / 40.0, 0.0, 1.0))
-
-        return busyness_norm
 
     ####################################################################
     # BUTTONS
@@ -926,12 +906,9 @@ class FabricRenderer:
         # ----------------------------------------------------------
 
         if garment_type == 'shirt':
-            busyness = self.estimate_shirt_busyness(
-                person_image,
-                shirt_mask
-            )
+            busyness_map = self.estimate_shirt_busyness_map(person_image, shirt_mask)
 
-            print("Shirt busyness score:", busyness)
+            print("Shirt busyness score:", busyness_map)
 
             # ----------------------------------------------------------
             # Step 4: RTV structure extraction.
@@ -971,7 +948,7 @@ class FabricRenderer:
 
             shading_map = self.separate_real_folds_from_texture(
                 shading_map,
-                busyness=busyness,
+                busyness_map=busyness_map,  # scalar busyness ऐवजी
                 large_fold_radius=25
             )
 
