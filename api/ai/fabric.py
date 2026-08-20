@@ -404,24 +404,24 @@ class FabricRenderer:
         # SHIRT BUSYNESS ESTIMATION
         ####################################################################
 
-        def estimate_shirt_busyness_map(self, person_image, shirt_mask, window=15):
-            """
-            संपूर्ण शर्टासाठी एकच busyness नंबर ऐवजी, प्रत्येक pixel साठी
-            स्थानिक (local) busyness काढतो. यामुळे हात/कॉलर सारख्या
-            जास्त texture असलेल्या भागात आपोआप जास्त suppression लागू होतं,
-            आणि साध्या torso भागात कमी.
-            """
-            gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY).astype(np.float32)
-            lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3).astype(np.float32)
+    def estimate_shirt_busyness_map(self, person_image, shirt_mask, window=15):
+        """
+        संपूर्ण शर्टासाठी एकच busyness नंबर ऐवजी, प्रत्येक pixel साठी
+        स्थानिक (local) busyness काढतो. यामुळे हात/कॉलर सारख्या
+        जास्त texture असलेल्या भागात आपोआप जास्त suppression लागू होतं,
+        आणि साध्या torso भागात कमी.
+        """
+        gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3).astype(np.float32)
 
-            mean = cv2.boxFilter(lap, -1, (window, window))
-            mean_sq = cv2.boxFilter(lap * lap, -1, (window, window))
-            local_std = np.sqrt(np.clip(mean_sq - mean * mean, 0, None))
+        mean = cv2.boxFilter(lap, -1, (window, window))
+        mean_sq = cv2.boxFilter(lap * lap, -1, (window, window))
+        local_std = np.sqrt(np.clip(mean_sq - mean * mean, 0, None))
 
-            busyness_map = np.clip(local_std / 40.0, 0.0, 1.0)
+        busyness_map = np.clip(local_std / 40.0, 0.0, 1.0)
 
-            mask = (shirt_mask > 0).astype(np.float32)
-            return busyness_map * mask
+        mask = (shirt_mask > 0).astype(np.float32)
+        return busyness_map * mask
 
     ####################################################################
     # SEPARATE REAL FOLDS FROM RESIDUAL TEXTURE
@@ -906,49 +906,35 @@ class FabricRenderer:
         # ----------------------------------------------------------
 
         if garment_type == 'shirt':
+            # Step 3: प्रत्येक pixel साठी local busyness map काढा
             busyness_map = self.estimate_shirt_busyness_map(person_image, shirt_mask)
 
-            print("Shirt busyness score:", busyness_map)
+            # scalar busyness = फक्त शर्ट भागातल्या pixels ची सरासरी
+            # (RTV sigma boost साठी लागतो -- extract_structure_map_rtv ला scalar हवा)
+            mask_bool = shirt_mask > 0
+            busyness_scalar = float(np.mean(busyness_map[mask_bool])) if mask_bool.sum() > 0 else 0.0
 
-            # ----------------------------------------------------------
-            # Step 4: RTV structure extraction.
-            # ----------------------------------------------------------
+            print("Shirt busyness (scalar):", busyness_scalar)
 
-            # जुनं (चुकीचं):
-            # shading_map = self.extract_structure_map_rtv(
-            #     person_image, shirt_mask,
-            #     pattern_repeat=pattern_repeat,   # <- नवीन fabric चा repeat
-            #     busyness=busyness
-            # )
-
-            # नवीन (बरोबर):
+            # Step 4: मूळ शर्टाच्या checks चा repeat काढा (नवीन fabric चा नाही)
             orig_repeat_x, orig_repeat_y = self.estimate_original_shirt_pattern_repeat(
                 person_image, shirt_mask
             )
             print("Original shirt pattern repeat (x, y):", orig_repeat_x, orig_repeat_y)
 
+            # Step 5: RTV extraction -- scalar busyness sigma boost साठी वापरतो
             shading_map = self.extract_structure_map_rtv(
                 person_image, shirt_mask,
-                pattern_repeat=orig_repeat_x,  # <- आता मूळ शर्टाच्या checks वरून
-                busyness=busyness
+                pattern_repeat=orig_repeat_x,
+                busyness=busyness_scalar  # <-- आता scalar व्यवस्थित मिळतो
             )
 
+            cv2.imwrite(str(DEBUG_FOLDER / "debug_2.1_after_RVT.png"), shading_map)
 
-
-            cv2.imwrite(
-                str(DEBUG_FOLDER / "debug_2.1_after_RVT.png"),
-                shading_map
-            )
-
-            # ----------------------------------------------------------
-            # Step 5: Separate real folds (large_scale) from residual
-            # print-leak texture (fine_residual); only suppress the
-            # latter, based on busyness.
-            # ----------------------------------------------------------
-
+            # Step 6: fine-texture suppress करताना per-pixel busyness_map वापरतो
             shading_map = self.separate_real_folds_from_texture(
                 shading_map,
-                busyness_map=busyness_map,  # scalar busyness ऐवजी
+                busyness_map=busyness_map,  # <-- map इथे वापरला जातो
                 large_fold_radius=25
             )
 
