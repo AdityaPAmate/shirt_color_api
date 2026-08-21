@@ -51,7 +51,7 @@ def downsample_image(input_path, output_folder, scale_factor=0.5):
 
 
 if __name__ == "__main__":
-    BASE_DIR = Path(__file__).resolve().parents[2]
+    BASE_DIR = Path(__file__).resolve().parents[3]
 
 
     # ----- इथे तुमचे actual path टाका -----

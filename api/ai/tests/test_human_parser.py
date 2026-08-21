@@ -16,7 +16,7 @@ from PIL import Image
 # ----------------------------------------------------------
 # Input / Output paths
 # ----------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[3]
 
 PERSON_IMAGE = f"{BASE_DIR}/test_images/ladies1.jpg"
 

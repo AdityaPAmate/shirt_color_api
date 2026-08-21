@@ -217,7 +217,7 @@ def fit_fabric_to_bbox(
 
 if __name__ == "__main__":
 
-    BASE_DIR = Path(__file__).resolve().parents[2]
+    BASE_DIR = Path(__file__).resolve().parents[3]
 
     person_image_path = f"{BASE_DIR}/test_images/person16.jpeg"
     fabric_image_path = f"{BASE_DIR}/fabric_images/floral_fabric7.png"

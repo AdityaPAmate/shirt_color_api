@@ -28,3 +28,9 @@ GroundingDINO/
 test_images/
 
 test_fabrics/
+
+fabric_images/
+
+output_tests_fabrics/
+
+ai_models/mediapipe/

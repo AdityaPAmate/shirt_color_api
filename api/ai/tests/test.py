@@ -5,7 +5,7 @@ import numpy as np
 # ==========================================================
 # PATHS
 # ==========================================================
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[3]
 INPUT = BASE_DIR / "fabric_images" / "plain_green_fabric.jpg"
 OUTPUT = BASE_DIR / "test_images" / "fabric_far_view_frequency.png"
 

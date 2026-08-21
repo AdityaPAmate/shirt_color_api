@@ -81,7 +81,7 @@ def draw_bbox_for_verification(person_img_path, bbox_xywh, output_folder):
     Person image वर दिलेला bbox rectangle काढून save करतो,
     जेणेकरून bbox खऱ्या shirt location वर बरोबर बसतो का ते डोळ्यांनी तपासता येईल.
     """
-    BASE_DIR = Path(__file__).resolve().parents[2]
+    BASE_DIR = Path(__file__).resolve().parents[3]
     person_img = cv2.imread(person_img_path)
     if person_img is None:
         print(f"Error: person image वाचता आली नाही -> {person_img_path}")
