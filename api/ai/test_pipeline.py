@@ -24,7 +24,7 @@ PERSON_IMAGE = f"{BASE_DIR}/test_images/ladies3.jpg"
 
 FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/test_fabrics/floral_fabric.png"
 
-OUTPUT_IMAGE = f"{BASE_DIR}/test_images/shirt_kurta_1152.jpg"
+OUTPUT_IMAGE = f"{BASE_DIR}/test_images/ladies_output_img/kurti_7.jpg"
 
 # ----------------------------------------------------------
 # Garment Type
