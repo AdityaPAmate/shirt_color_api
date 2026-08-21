@@ -62,16 +62,25 @@ class ShirtDetector:
     def detect_shirt(
             self,
             image_path,
+            detection_target="shirt",
             box_threshold=0.35,
             text_threshold=0.25,
     ):
         """
-        Detect shirts in an image.
+        Detect a garment in an image.
 
         Parameters
         ----------
         image_path : str
             Path to the input image.
+
+        detection_target : str
+            GroundingDINO la denyacha text prompt / class name --
+            "shirt", "pant", "jacket", "kurta" etc. Pipeline
+            (ani tyavarun API/Postman) varun ha bahyerun pass hoto.
+            Default "shirt" aahe (jashi purvi hardcoded value hoti,
+            tyamule jar koni ha parameter dila nahi tar juna
+            behavior tasach rahto).
 
         box_threshold : float
             Minimum confidence required for object detection.
@@ -92,7 +101,7 @@ class ShirtDetector:
 
         detections = self.model.predict_with_classes(
             image=image,
-            classes=["long top"],
+            classes=[detection_target],
             box_threshold=box_threshold,
             text_threshold=text_threshold,
         )

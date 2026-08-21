@@ -132,7 +132,8 @@ class ShirtPipeline:
         person_image_path,
         fabric_image_path,
         output_path,
-        garment_type="shirt"
+        garment_type="shirt",
+        detection_target="shirt"
     ):
         """
         Complete fabric replacement pipeline.
@@ -152,9 +153,15 @@ class ShirtPipeline:
             "tile" -> Repeat fabric pattern.
             "fit"  -> Stretch fabric.
 
-        garment_type : str
+                garment_type : str
             "shirt" -> use SAM shirt mask as-is.
             "kurta" -> extend SAM shirt mask into a basic Kurta mask.
+
+        detection_target : str
+            GroundingDINO la denyacha text prompt -- "shirt", "pant",
+            "jacket", "kurta" etc. Konta garment DETECT karायcha te
+            control karto (garment_type mask-TEMPLATE control karto --
+            donhi vegळे, pan sadhya sathi sarkhich value denyat yeईl).
 
         Returns
         -------
@@ -171,7 +178,8 @@ class ShirtPipeline:
         print("\n====================================")
         print("Starting Fabric Replacement Pipeline")
         print("====================================")
-        print("Garment Type :", garment_type)
+        print("Garment Type      :", garment_type)
+        print("Detection Target  :", detection_target)
 
         ############################################################
         # STEP 1
@@ -180,7 +188,8 @@ class ShirtPipeline:
         print("\nStep 1 : Detect Shirt")
 
         detection = self.detector.detect_shirt(
-            person_image_path
+            person_image_path,
+            detection_target=detection_target
         )
 
         print("Detection Completed")
