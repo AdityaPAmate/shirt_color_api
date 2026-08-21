@@ -637,3 +637,33 @@ class FabricAnalyzer:
         print(f"Edge Ratio : {edge_ratio:.4f}")
 
         return edge_ratio > 0.03
+
+    def detect_pattern_repeat_fft_fallback(self, gray_crop, min_repeat=8, max_repeat=80):
+        """
+        Autocorrelation (2 peaks) fail झाल्यास वापरायचा fallback --
+        लहान crop वरही काम करतो, कारण हा फक्त सर्वात प्रभावी (dominant)
+        single frequency शोधतो, दोन स्पष्ट peaks नाही.
+        """
+        f = np.fft.fft2(gray_crop.astype(np.float32) - gray_crop.mean())
+        fshift = np.abs(np.fft.fftshift(f))
+
+        h, w = gray_crop.shape
+        cy, cx = h // 2, w // 2
+
+        # DC च्या जवळचा भाग (0 frequency) वगळा
+        fshift[cy - 2:cy + 3, cx - 2:cx + 3] = 0
+
+        # सर्वात मजबूत frequency शोधा
+        max_idx = np.unravel_index(np.argmax(fshift), fshift.shape)
+        fy, fx = max_idx
+        dist = np.hypot(fy - cy, fx - cx)
+
+        if dist < 1:
+            return None
+
+        period = min(h, w) / dist
+
+        if min_repeat <= period <= max_repeat:
+            return int(round(period))
+
+        return None

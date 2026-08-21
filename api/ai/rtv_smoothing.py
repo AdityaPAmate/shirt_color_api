@@ -141,7 +141,32 @@ def extract_rtv_structure(
         (crop.shape[1], crop.shape[0])
     )
 
-    local_mean = cv2.GaussianBlur(structure_crop, (0, 0), 21)
+    # ----------------------------------------------------------------
+    # NEW (Issue #9 fix): local_mean चा blur sigma आता FIXED 21 नाही.
+    #
+    # हा blur, प्रत्येक भागाचा स्वतःचा रंग/albedo काढून टाकून फक्त
+    # shading (structure/local_mean) उरवण्यासाठी वापरला जातो. पण
+    # fixed sigma=21 हा garment च्या fabric-panel सीमा (उदा. zipper,
+    # वेगळ्या रंगाचे sleeve/body panels) पूर्णपणे smooth करू शकत
+    # नव्हता, विशेषतः मोठ्या crop वर -- त्यामुळे त्या सीमांभोवती
+    # खोटा "shading halo" तयार होत होता, जो नेमका garment च्या
+    # shape/seam च्या बाजूनेच दिसत होता (checks नसतानाही).
+    #
+    # आता हा sigma crop च्या actual size वरून adaptive आहे -- मोठ्या
+    # crop वर मोठा blur (panel boundaries नीट smooth होण्यासाठी),
+    # लहान crop वर लहान blur (fold detail टिकून राहण्यासाठी).
+    # ----------------------------------------------------------------
+    crop_h, crop_w = structure_crop.shape[:2]
+    crop_min_dim = max(1, min(crop_h, crop_w))
+
+    local_mean_sigma = max(15.0, min(80.0, crop_min_dim * 0.12))
+
+    print(
+        f"extract_rtv_structure -> crop_min_dim: {crop_min_dim}, "
+        f"local_mean_sigma (adaptive): {local_mean_sigma:.2f}"
+    )
+
+    local_mean = cv2.GaussianBlur(structure_crop, (0, 0), local_mean_sigma)
     local_mean = np.clip(local_mean, 1e-3, None)
     shading_crop = structure_crop / local_mean
 

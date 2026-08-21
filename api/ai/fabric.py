@@ -181,11 +181,6 @@ class FabricRenderer:
     ####################################################################
 
     def estimate_original_shirt_pattern_repeat(self, person_image, shirt_mask):
-        """
-        अपलोड केलेल्या नवीन fabric ऐवजी, व्यक्तीच्या ORIGINAL फोटोतल्या
-        शर्टाचा स्वतःचा checks/lines repeat किती pixel चा आहे ते मोजतो.
-        RTV चा sigma याच नंबरवरून ठरायला हवा -- नवीन fabric शी संबंध नाही.
-        """
         mask_bin = (shirt_mask > 0).astype(np.uint8)
         ys, xs = np.where(mask_bin > 0)
         if len(ys) == 0:
@@ -197,15 +192,21 @@ class FabricRenderer:
         crop = person_image[y0:y1, x0:x1].copy()
         crop_mask = mask_bin[y0:y1, x0:x1]
 
-        # शर्ट नसलेला भाग inpaint करा (rtv_smoothing.py मध्ये आधीच वापरलेली तीच पद्धत)
         non_shirt = (crop_mask == 0).astype(np.uint8) * 255
         crop = cv2.inpaint(crop, non_shirt, 9, cv2.INPAINT_TELEA)
 
         repeat_x = self.fabric_analyzer.detect_pattern_repeat(crop)
         repeat_y = self.fabric_analyzer.detect_pattern_repeat_y(crop)
 
-        return repeat_x, repeat_y
+        # ------------------------------------------------------------
+        # NEW: autocorrelation fail (None) झाल्यास FFT fallback वापरा
+        # ------------------------------------------------------------
+        if repeat_x is None:
+            gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            repeat_x = self.fabric_analyzer.detect_pattern_repeat_fft_fallback(gray_crop)
+            print("Autocorrelation failed -> FFT fallback repeat_x:", repeat_x)
 
+        return repeat_x, repeat_y
     def preserve_lighting(
             self,
             person_image,
@@ -369,15 +370,26 @@ class FabricRenderer:
             busyness=0.0
     ):
         """
-        Extract a multiplicative shading map using Relative Total
-        Variation (RTV) smoothing - separates fold/lighting structure
-        (aperiodic) from weave/print texture (periodic), unlike a
-        plain frequency-only high-pass filter.
-
-        sigma is tied to the detected weave/print pitch when known;
-        for busy (print-heavy) shirts, smoothing is made more
-        aggressive to suppress texture leak.
+        NEW: sigma cap आता fixed "8.0" नाही, तर शर्ट crop च्या actual size
+        वरून adaptive आहे. जुना fixed cap मोठ्या checks (उदा. pitch=38px)
+        साठी खूप लहान पडत होता -- त्यामुळे pitch=38 आणि pitch=420 दोन्ही
+        सारख्याच sigma=8.0 वर clip होत होते, आणि Fix #1 चा output वर
+        काहीच परिणाम दिसत नव्हता.
         """
+
+        mask_bin = (shirt_mask > 0).astype(np.uint8)
+        ys, xs = np.where(mask_bin > 0)
+
+        if len(ys) > 0:
+            crop_h = ys.max() - ys.min()
+            crop_w = xs.max() - xs.min()
+            crop_min_dim = max(1, min(crop_h, crop_w))
+        else:
+            crop_min_dim = 200
+
+        # शर्ट crop च्या 18% पर्यंत sigma जाऊ शकतो (किमान 8.0 राहील,
+        # जेणेकरून बारीक weave texture साठी जुनं behavior तसंच राहील)
+        sigma_cap = max(8.0, crop_min_dim * 0.18)
 
         sigma = 3.0
         lam = 0.015
@@ -386,17 +398,22 @@ class FabricRenderer:
             try:
                 pitch = min(pattern_repeat) if isinstance(pattern_repeat, (tuple, list)) else pattern_repeat
                 if pitch and pitch > 0:
-                    sigma = max(1.5, min(8.0, pitch * 0.5))
+                    sigma = max(1.5, min(sigma_cap, pitch * 0.55))
             except Exception:
                 pass
 
-        # busy प्रिंटसाठी जास्त aggressive smoothing
         if busyness > 0.5:
-            sigma = max(sigma, 4.5)
-            lam = 0.025
+            sigma = max(sigma, sigma_cap * 0.5)
+            lam = 0.03
+
+        # ---- हे print जरूर ठेवा -- पुढच्या run मध्ये actual sigma बघून confirm करा ----
+        print(
+            f"RTV params -> pitch: {pattern_repeat}, crop_min_dim: {crop_min_dim}, "
+            f"sigma_cap: {sigma_cap:.2f}, final sigma: {sigma:.2f}, lam: {lam}"
+        )
 
         shading_map = extract_rtv_structure(
-            person_image, shirt_mask, sigma=sigma, lam=lam, iterations=5
+            person_image, shirt_mask, sigma=sigma, lam=lam, iterations=6
         )
         return shading_map
 
@@ -406,36 +423,125 @@ class FabricRenderer:
 
     def estimate_shirt_busyness_map(self, person_image, shirt_mask, window=15):
         """
-        संपूर्ण शर्टासाठी एकच busyness नंबर ऐवजी, प्रत्येक pixel साठी
-        स्थानिक (local) busyness काढतो. यामुळे हात/कॉलर सारख्या
-        जास्त texture असलेल्या भागात आपोआप जास्त suppression लागू होतं,
-        आणि साध्या torso भागात कमी.
+        Fixed constant (/40.0) ऐवजी, प्रत्येक फोटोच्या स्वतःच्या actual
+        contrast range वरून adaptive normalization करतो. यामुळे वेगवेगळ्या
+        exposure/resolution च्या फोटोंवर सुद्धा busyness_map नेहमी पूर्ण
+        [0,1] range मध्ये spread होतो -- "calibrate on test images" ही
+        गरजच राहत नाही.
         """
-        gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gray = cv2.cvtColor(person_image, cv2.COLOR_BGR2GRAY)
         lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3).astype(np.float32)
 
         mean = cv2.boxFilter(lap, -1, (window, window))
         mean_sq = cv2.boxFilter(lap * lap, -1, (window, window))
         local_std = np.sqrt(np.clip(mean_sq - mean * mean, 0, None))
 
-        busyness_map = np.clip(local_std / 40.0, 0.0, 1.0)
+        mask = (shirt_mask > 0)
 
-        mask = (shirt_mask > 0).astype(np.float32)
-        return busyness_map * mask
+        if mask.sum() == 0:
+            return np.zeros_like(local_std, dtype=np.float32)
 
+        # ------------------------------------------------------------
+        # NEW: fixed /40.0 ऐवजी, या फोटोतल्या शर्ट भागातल्या 95th
+        # percentile वरून normalize करा -- adaptive, self-calibrating.
+        # ------------------------------------------------------------
+        ref_high = np.percentile(local_std[mask], 95)
+        ref_high = max(ref_high, 1e-3)  # divide-by-zero टाळण्यासाठी
+
+        busyness_map = np.clip(local_std / ref_high, 0.0, 1.0)
+
+        print(
+            "Busyness map stats -> ref_high(95th pct):", ref_high,
+            "| mean over shirt:", float(np.mean(busyness_map[mask])),
+            "| max:", float(np.max(busyness_map[mask]))
+        )
+
+        return busyness_map * mask.astype(np.float32)
+
+
+
+    ####################################################################
+    # DEBUG VISUALIZATION HELPER (adaptive — कुठलाही fixed multiplier नाही)
+    ####################################################################
+
+    def _debug_visualize_map(self, value_map):
+        """
+        shading_map च्या values साधारण 0.3-1.6 range मध्ये (float)
+        असतात. cv2.imwrite ला हा array जसाच्या तसा दिला की तो प्रत्येक
+        pixel ला जवळपास 0/1 (uint8) असं वाचतो -> संपूर्ण इमेज काळी
+        दिसते.
+
+        हे फंक्शन प्रत्येक इमेजच्या स्वतःच्या ACTUAL min/max वरून
+        adaptive पद्धतीने 0-255 range मध्ये स्ट्रेच करतं -- त्यामुळे
+        प्रत्येक वेगळ्या फोटोवर (वेगळी shading range असली तरी) नेहमी
+        योग्य contrast दिसेल. इथे कुठलाही fixed multiplier (जसं आधीचं
+        *127) वापरलेला नाही.
+        """
+        v_min = float(value_map.min())
+        v_max = float(value_map.max())
+
+        if v_max - v_min < 1e-6:
+            return np.full(value_map.shape, 128, dtype=np.uint8)
+
+        normalized = (value_map - v_min) / (v_max - v_min)
+        return (normalized * 255).astype(np.uint8)
     ####################################################################
     # SEPARATE REAL FOLDS FROM RESIDUAL TEXTURE
     ####################################################################
 
     def separate_real_folds_from_texture(
-            self, shading_map, busyness_map=None, busyness=0.0, large_fold_radius=25
+            self, shading_map, busyness_map=None, busyness=0.0,
+            large_fold_radius=25, pattern_pitch=None
     ):
+        """
+        NEW: bilateral radius (sigmaSpace) पूर्वीच check/line pitch
+        पेक्षा मोठा केला होता (Issue #6).
+
+        NEW (Issue #8 fix): sigmaColor आता FIXED 45 नाही. bilateral
+        filter मध्ये sigmaSpace (radius) आणि sigmaColor (intensity
+        threshold) हे दोन SWATANTRA axes आहेत -- radius कितीही
+        वाढवला तरी, जर check pattern चा intensity-contrast fixed
+        sigmaColor पेक्षा जास्त असेल, तर filter त्या check-कडांना
+        "real edge" समजून तशाच ठेवतो (blur करत नाही) -- म्हणजे radius
+        फिक्स करूनही checks लीक होतच राहतात.
+
+        आता sigmaColor हा शर्ट भागातल्या ACTUAL intensity spread
+        (norm_u8 चा std, busyness_map द्वारे मास्क केलेला) वरून
+        adaptive काढला जातो -- जास्त busy/high-contrast प्रिंटसाठी
+        जास्त sigmaColor, कमी busy शर्टसाठी कमी.
+        """
+
+        if pattern_pitch:
+            # radius नेहमी pitch च्या किमान 1.8 पट मोठा ठेवा
+            large_fold_radius = max(large_fold_radius, int(pattern_pitch * 1.8))
+
         map_min, map_max = shading_map.min(), shading_map.max()
         norm = (shading_map - map_min) / (map_max - map_min + 1e-6)
         norm_u8 = (norm * 255).astype(np.uint8)
 
+        # ------------------------------------------------------------
+        # NEW: sigmaColor adaptive -- शर्ट भागातल्या actual intensity
+        # spread वरून (busyness_map>0 = शर्ट pixels, बाकी बाहेरचे नाही)
+        # ------------------------------------------------------------
+        if busyness_map is not None:
+            mask_region = busyness_map > 0
+        else:
+            mask_region = np.ones_like(norm_u8, dtype=bool)
+
+        if mask_region.sum() > 0:
+            intensity_std = float(np.std(norm_u8[mask_region]))
+        else:
+            intensity_std = float(np.std(norm_u8))
+
+        sigma_color = max(15.0, min(80.0, intensity_std * 1.2))
+
+        print(
+            f"separate_real_folds -> intensity_std: {intensity_std:.2f}, "
+            f"adaptive sigmaColor: {sigma_color:.2f}"
+        )
+
         large_scale_u8 = cv2.bilateralFilter(
-            norm_u8, d=0, sigmaColor=30, sigmaSpace=large_fold_radius
+            norm_u8, d=0, sigmaColor=sigma_color, sigmaSpace=large_fold_radius
         )
         large_scale = (large_scale_u8.astype(np.float32) / 255.0) * \
                       (map_max - map_min) + map_min
@@ -444,13 +550,19 @@ class FabricRenderer:
 
         if busyness_map is not None:
             bm = cv2.resize(busyness_map, (shading_map.shape[1], shading_map.shape[0]))
-            # जास्त busy भागात जास्त suppress (कमी fine_blend), साध्या भागात कमी suppress
-            fine_blend_map = 0.9 - (0.9 - 0.10) * bm
-            fine_blend_map = np.clip(fine_blend_map, 0.10, 0.9)
+            # जास्त aggressive suppression: आधी 0.9->0.10 (जास्तीत जास्त फक्त
+            # ४५% suppress होत होतं), आता 0.7->0.02 (जास्तीत जास्त ~९८% suppress)
+            fine_blend_map = 0.7 - (0.7 - 0.02) * bm
+            fine_blend_map = np.clip(fine_blend_map, 0.02, 0.7)
             fine_residual = fine_residual * fine_blend_map
         else:
-            fine_blend = float(np.interp(busyness, [0.0, 1.0], [0.9, 0.10]))
+            fine_blend = float(np.interp(busyness, [0.0, 1.0], [0.7, 0.02]))
             fine_residual = fine_residual * fine_blend
+
+        print(
+            f"separate_real_folds -> pattern_pitch: {pattern_pitch}, "
+            f"large_fold_radius used: {large_fold_radius}"
+        )
 
         return large_scale + fine_residual
     ####################################################################
@@ -460,14 +572,27 @@ class FabricRenderer:
     def enhance_fold_contrast(
             self,
             shading_map,
+            shirt_mask=None,
             edge_gain=1.8,
             smooth_sigma=8,
-            clip_range=(0.75, 1.30)
+            clip_range=None
     ):
         """
         Unsharp-masking based contrast enhancement:
         only amplifies LOCAL EDGES (real fold transitions), leaves
         flat regions untouched -> looks like a crease, not a blob.
+
+        NEW (Issue #7 fix): clip_range आता FIXED (0.75, 1.30) नाही.
+        जुना fixed clip_range खूप अरुंद असल्यामुळे tanh() नेहमी त्याच
+        [0.75, 1.30] बाउंड्सवर saturate होत होता -- upstream मध्ये
+        sigma/large_fold_radius कितीही बदलले तरी final output नेहमी
+        जवळपास सेम range/std मध्ये दिसत होता (verified via logs:
+        min/max दोन्ही run मध्ये 0.75/1.30 च्या अगदी जवळ अडकलेले होते).
+
+        आता clip_range हा शर्ट भागातल्या ACTUAL enhanced values च्या
+        std वरून adaptive काढला जातो -- जेवढा jास्त real fold/texture
+        signal, तेवढी jास्त room tanh ला मिळेल, जेणेकरून upstream चे
+        फिक्स प्रत्यक्ष output मध्ये दिसतील.
 
         Uses a soft (tanh) clip instead of a hard clip, and a light
         final blur, to avoid harsh/plastic-looking edges.
@@ -479,9 +604,34 @@ class FabricRenderer:
 
         enhanced = very_smooth + edge_component * edge_gain
 
+        # ------------------------------------------------------------
+        # NEW: clip_range शर्ट भागाच्या actual spread वरून adaptive
+        # ------------------------------------------------------------
+        if clip_range is None:
+            if shirt_mask is not None:
+                mask_bool = shirt_mask > 0
+                sample = enhanced[mask_bool] if mask_bool.sum() > 0 else enhanced
+            else:
+                sample = enhanced
+
+            measured_std = float(np.std(sample))
+
+            # किमान 0.15 half_range ठेवा (खूप सपाट/plain शर्टवर range
+            # शून्याजवळ जाऊन divide-by-near-zero टाळण्यासाठी)
+            half_range = max(0.15, measured_std * 3.0)
+
+            center = 1.0
+            clip_range = (center - half_range, center + half_range)
+
         lo, hi = clip_range
         center = (lo + hi) / 2.0
         half_range = (hi - lo) / 2.0
+
+        print(
+            f"enhance_fold_contrast -> measured_std: {float(np.std(enhanced)):.5f}, "
+            f"clip_range used: ({lo:.3f}, {hi:.3f})"
+        )
+
         enhanced = center + half_range * np.tanh(
             (enhanced - center) / half_range
         )
@@ -489,7 +639,6 @@ class FabricRenderer:
         enhanced = cv2.GaussianBlur(enhanced, (0, 0), 1.2)
 
         return enhanced
-
     ####################################################################
     # APPLY STRUCTURE MAP (Lab L-channel, highlight-safe)
     ####################################################################
@@ -922,6 +1071,9 @@ class FabricRenderer:
             )
             print("Original shirt pattern repeat (x, y):", orig_repeat_x, orig_repeat_y)
 
+            busyness_scal = float(np.mean(busyness_map[mask_bool]))
+            print(">>> busyness_scalar:", busyness_scal)
+
             # Step 5: RTV extraction -- scalar busyness sigma boost साठी वापरतो
             shading_map = self.extract_structure_map_rtv(
                 person_image, shirt_mask,
@@ -929,18 +1081,21 @@ class FabricRenderer:
                 busyness=busyness_scalar  # <-- आता scalar व्यवस्थित मिळतो
             )
 
-            cv2.imwrite(str(DEBUG_FOLDER / "debug_2.1_after_RVT.png"), shading_map)
-
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_2.1_after_RVT.png"),
+                self._debug_visualize_map(shading_map)
+            )
             # Step 6: fine-texture suppress करताना per-pixel busyness_map वापरतो
             shading_map = self.separate_real_folds_from_texture(
                 shading_map,
-                busyness_map=busyness_map,  # <-- map इथे वापरला जातो
-                large_fold_radius=25
+                busyness_map=busyness_map,
+                large_fold_radius=25,
+                pattern_pitch=orig_repeat_x  # <-- NEW: 38 इथे जाईल
             )
 
             cv2.imwrite(
                 str(DEBUG_FOLDER / "debug_2.2_after_seperate_fold_from_structure.png"),
-                shading_map
+                self._debug_visualize_map(shading_map)
             )
 
             # ----------------------------------------------------------
@@ -949,6 +1104,7 @@ class FabricRenderer:
 
             shading_map = self.enhance_fold_contrast(
                 shading_map,
+                shirt_mask=shirt_mask,
                 edge_gain=2.3,
                 smooth_sigma=5
             )
