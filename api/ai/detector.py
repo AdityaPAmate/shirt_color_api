@@ -92,7 +92,7 @@ class ShirtDetector:
 
         detections = self.model.predict_with_classes(
             image=image,
-            classes=["shirt"],
+            classes=["long top"],
             box_threshold=box_threshold,
             text_threshold=text_threshold,
         )

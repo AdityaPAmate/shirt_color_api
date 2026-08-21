@@ -459,7 +459,209 @@ class FabricRenderer:
         return busyness_map * mask.astype(np.float32)
 
 
+    ####################################################################
+    # CHROMATICITY-BASED MATERIAL EDGE MASK
+    # (Classical Intrinsic Image Decomposition -- Retinex-style
+    # colour-ratio test. कुठलाही Neural Network नाही, फक्त gradients.)
+    ####################################################################
 
+    def estimate_material_edge_mask(self, person_image, shirt_mask):
+        """
+        NEW (v2): Region-based classical intrinsic decomposition.
+
+        आधीची version फक्त रंग-बदलाच्या CADGE वर काम करत होती (पातळ
+        सीमा), त्यामुळे झिपर/पॅनलचा आतला भाग तसाच (detailed) राहायचा.
+
+        आता: शर्ट भागाचा DOMINANT (सगळ्यात जास्त वापरलेला) रंग काढतो,
+        आणि प्रत्येक pixel त्या रंगापासून किती दूर आहे ते मोजतो. जो
+        संपूर्ण भाग dominant रंगापेक्षा बराच वेगळा आहे (झिपर, वेगळ्या
+        रंगाचा पॅनल, trim) -- तो पूर्ण भाग (नुसती कड नाही,
+        morphological closing ने आतला भागही भरून) तटस्थ करतो.
+
+        मूळ फॅब्रिक-रंगाच्याच भागातलं RTV shading (म्हणजे खरे folds)
+        जसंच्या तसं ठेवतो.
+        """
+
+        lab = cv2.cvtColor(person_image, cv2.COLOR_BGR2LAB).astype(np.float32)
+        a = lab[:, :, 1]
+        b = lab[:, :, 2]
+
+        mask_bool = shirt_mask > 0
+        if mask_bool.sum() == 0:
+            return np.zeros(person_image.shape[:2], dtype=np.float32)
+
+        ys, xs = np.where(mask_bool)
+        crop_min_dim = max(1, min(ys.max() - ys.min(), xs.max() - xs.min()))
+
+        # ------------------------------------------------------------
+        # Dominant fabric रंग -- शर्ट भागातल्या a/b चा MEDIAN (मोठ्या
+        # outlier भागांकडे (झिपर, ट्रिम) दुर्लक्ष करतो, कारण मूळ फॅब्रिक
+        # भागच बहुसंख्य असतो)
+        # ------------------------------------------------------------
+        a_dom = float(np.median(a[mask_bool]))
+        b_dom = float(np.median(b[mask_bool]))
+
+        chroma_dist = np.sqrt((a - a_dom) ** 2 + (b - b_dom) ** 2)
+
+        # ------------------------------------------------------------
+        # NEW: adaptive threshold -- शर्ट भागातल्याच chroma_dist च्या
+        # 70th percentile वरून (fixed नाही)
+        # ------------------------------------------------------------
+        ref_high = np.percentile(chroma_dist[mask_bool], 70)
+        ref_high = max(ref_high, 1e-3)
+
+        region_weight = np.clip(chroma_dist / ref_high, 0.0, 1.0)
+
+        # किरकोळ/सौम्य रंग-drift (जो नुसत्या shading मुळेही होऊ शकतो)
+        # वगळण्यासाठी squared करतो -- फक्त खरंच वेगळा रंग असलेला भाग
+        # जास्त वजन घेईल
+        region_weight = region_weight ** 2
+
+        # ------------------------------------------------------------
+        # NEW: Morphological CLOSING -- आधीच्या version मध्ये फक्त
+        # सीमा पकडली जायची, आता झिपर/पॅनलचा आतला भागही एकसंधपणे भरला
+        # जातो (kernel size crop च्या size वरून adaptive)
+        # ------------------------------------------------------------
+        kernel_size = max(3, int(crop_min_dim * 0.03))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+
+        region_u8 = (region_weight * 255).astype(np.uint8)
+        region_u8 = cv2.morphologyEx(region_u8, cv2.MORPH_CLOSE, kernel)
+        region_weight = region_u8.astype(np.float32) / 255.0
+
+        # कडेवर मऊ संक्रमण (hard cutoff टाळण्यासाठी)
+        blur_sigma = max(2.0, min(15.0, crop_min_dim * 0.03))
+        region_weight = cv2.GaussianBlur(region_weight, (0, 0), blur_sigma)
+
+        region_weight = region_weight * mask_bool.astype(np.float32)
+
+        print(
+            f"estimate_material_edge_mask -> crop_min_dim: {crop_min_dim}, "
+            f"a_dom: {a_dom:.1f}, b_dom: {b_dom:.1f}, ref_high(70th pct): {ref_high:.2f}, "
+            f"kernel_size: {kernel_size}, blur_sigma: {blur_sigma:.2f}, "
+            f"mean region_weight over shirt: {float(np.mean(region_weight[mask_bool])):.4f}"
+        )
+
+        return region_weight
+
+
+
+    ####################################################################
+    # FLAT-PATCH DETECTOR (achromatic logos/trims — chroma नाही तरी पकडतो)
+    ####################################################################
+
+    def estimate_flat_patch_mask(self, person_image, shirt_mask):
+        """
+        Chroma-based check (a/b) फक्त रंगीत material बदल पकडतो. पण logo/
+        trim सारखे भाग बरेचदा राखाडी-वर-राखाडी (achromatic) असतात --
+        तिथे a/b जवळपास सेमच राहतो, त्यामुळे chroma check त्यांना सोडून
+        देतो.
+
+        फरक असा: खरं fold नेहमी GRADUAL (सतत बदलणारं) असतं. logo/trim/
+        patch मात्र एक सपाट (flat) प्रदेश असतो ज्याची सीमा अचानक
+        (sharp) असते. हे function दोन वेगळ्या window sizes वरचा L
+        (brightness) std काढून हा फरक शोधतो.
+        """
+
+        lab = cv2.cvtColor(person_image, cv2.COLOR_BGR2LAB).astype(np.float32)
+        L = lab[:, :, 0]
+
+        mask_bool = shirt_mask > 0
+        if mask_bool.sum() == 0:
+            return np.zeros(person_image.shape[:2], dtype=np.float32)
+
+        ys, xs = np.where(mask_bool)
+        crop_min_dim = max(1, min(ys.max() - ys.min(), xs.max() - xs.min()))
+
+        small_win = max(3, int(crop_min_dim * 0.015))
+        if small_win % 2 == 0:
+            small_win += 1
+        medium_win = max(7, int(crop_min_dim * 0.06))
+        if medium_win % 2 == 0:
+            medium_win += 1
+
+        mean_s = cv2.boxFilter(L, -1, (small_win, small_win))
+        mean_sq_s = cv2.boxFilter(L * L, -1, (small_win, small_win))
+        std_small = np.sqrt(np.clip(mean_sq_s - mean_s ** 2, 0, None))
+
+        mean_m = cv2.boxFilter(L, -1, (medium_win, medium_win))
+        mean_sq_m = cv2.boxFilter(L * L, -1, (medium_win, medium_win))
+        std_medium = np.sqrt(np.clip(mean_sq_m - mean_m ** 2, 0, None))
+
+        ref_medium = np.percentile(std_medium[mask_bool], 85)
+        ref_medium = max(ref_medium, 1e-3)
+        medium_norm = np.clip(std_medium / ref_medium, 0.0, 1.0)
+
+        # खरं fold: small_std ≈ medium_std (सतत बदल) -> flatness_ratio ≈ 1
+        # flat patch: small_std << medium_std (आत सपाट, सीमेवर उडी) -> ratio ≈ 0
+        flatness_ratio = std_small / (std_medium + 1e-3)
+        flatness_ratio = np.clip(flatness_ratio, 0.0, 1.0)
+
+        plateau_score = medium_norm * (1.0 - flatness_ratio)
+
+        kernel_size = max(3, int(crop_min_dim * 0.02))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+
+        plateau_u8 = (plateau_score * 255).astype(np.uint8)
+        plateau_u8 = cv2.morphologyEx(plateau_u8, cv2.MORPH_CLOSE, kernel)
+        plateau_score = plateau_u8.astype(np.float32) / 255.0
+
+        blur_sigma = max(2.0, min(15.0, crop_min_dim * 0.03))
+        plateau_score = cv2.GaussianBlur(plateau_score, (0, 0), blur_sigma)
+        plateau_score = plateau_score * mask_bool.astype(np.float32)
+
+        print(
+            f"estimate_flat_patch_mask -> crop_min_dim: {crop_min_dim}, "
+            f"small_win: {small_win}, medium_win: {medium_win}, "
+            f"mean plateau_score over shirt: {float(np.mean(plateau_score[mask_bool])):.4f}"
+        )
+
+        return plateau_score
+
+    ####################################################################
+    # RESIDUAL FINE-GRAIN CLEANUP (शेवटचा polish pass)
+    ####################################################################
+
+    def remove_residual_fine_grain(self, shading_map, shirt_mask):
+        """
+        वरच्या सगळ्या स्टेप्सनंतरही sleeve सारख्या भागात उरलेला बारीक
+        grain/noise texture काढण्यासाठी शेवटचा edge-preserving smoothing
+        pass. मोठे fold-आकार (large gradients) टिकवतो, फक्त बारीक दाणेदार
+        noise काढतो.
+        """
+
+        mask_bool = shirt_mask > 0
+        if mask_bool.sum() == 0:
+            return shading_map
+
+        ys, xs = np.where(mask_bool)
+        crop_min_dim = max(1, min(ys.max() - ys.min(), xs.max() - xs.min()))
+
+        map_min, map_max = shading_map.min(), shading_map.max()
+        norm = (shading_map - map_min) / (map_max - map_min + 1e-6)
+        norm_u8 = (norm * 255).astype(np.uint8)
+
+        grain_radius = max(10.0, crop_min_dim * 0.06)
+        intensity_std = float(np.std(norm_u8[mask_bool]))
+        grain_sigma_color = max(10.0, min(60.0, intensity_std * 0.8))
+
+        smoothed_u8 = cv2.bilateralFilter(
+            norm_u8, d=0, sigmaColor=grain_sigma_color, sigmaSpace=grain_radius
+        )
+
+        smoothed = (smoothed_u8.astype(np.float32) / 255.0) * \
+                   (map_max - map_min) + map_min
+
+        print(
+            f"remove_residual_fine_grain -> crop_min_dim: {crop_min_dim}, "
+            f"grain_radius: {grain_radius:.2f}, grain_sigma_color: {grain_sigma_color:.2f}"
+        )
+
+        return smoothed
     ####################################################################
     # DEBUG VISUALIZATION HELPER (adaptive — कुठलाही fixed multiplier नाही)
     ####################################################################
@@ -1098,6 +1300,42 @@ class FabricRenderer:
                 self._debug_visualize_map(shading_map)
             )
 
+            # ----------------------------------------------------------
+            # Step 6.5 (NEW): Classical intrinsic-decomposition
+            # material-edge suppression. जिथे खरा रंग/material बदल आहे
+            # (zipper, seam, वेगळा रंग-पॅनल) तिथली shading जबरदस्तीने
+            # तटस्थ (1.0) करतो -- कारण ते खरं शेडिंग नसून गारमेंटचाच
+            # रंग-बदल आहे, आणि तो नवीन fabric replace केल्यावर आपोआप
+            # निघून जाणार आहे.
+            # ----------------------------------------------------------
+
+            chroma_weight = self.estimate_material_edge_mask(
+                person_image, shirt_mask
+            )
+            flat_patch_weight = self.estimate_flat_patch_mask(
+                person_image, shirt_mask
+            )
+
+            # दोन्ही signal मधलं जास्त असलेलं वजन वापरतो -- रंगीत material
+            # बदल chroma पकडतो, achromatic logo/trim flat_patch पकडतो
+            material_edge_weight = np.maximum(chroma_weight, flat_patch_weight)
+
+            shading_map = 1.0 + (shading_map - 1.0) * (1.0 - material_edge_weight)
+
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_2.3_after_material_edge_suppression.png"),
+                self._debug_visualize_map(shading_map)
+            )
+
+            # ----------------------------------------------------------
+            # Step 6.6 (NEW): उरलेला fine grain काढा
+            # ----------------------------------------------------------
+            shading_map = self.remove_residual_fine_grain(shading_map, shirt_mask)
+
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_2.4_after_grain_cleanup.png"),
+                self._debug_visualize_map(shading_map)
+            )
             # ----------------------------------------------------------
             # Step 6: Edge-aware fold contrast enhancement.
             # ----------------------------------------------------------
