@@ -24,3 +24,7 @@ output/
 Thumbs.db
 
 GroundingDINO/
+
+test_images/
+
+test_fabrics/
