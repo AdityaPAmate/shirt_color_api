@@ -1,21 +1,15 @@
 """
 Simple testing file.
-
-This file should remain very small.
-
-All AI logic is handled inside:
-
-    api/ai/pipeline.py
+All AI logic is handled inside: api/ai/pipeline.py
 """
 
-from api.ai.pipeline import ShirtPipeline
-
+from api.ai.pipeline_singleton import get_pipeline   # <-- BADLALA
 
 from pathlib import Path
 
-# Get the path to the file you want
 BASE_DIR = Path(__file__).resolve().parents[2]
 print(BASE_DIR)
+
 # ----------------------------------------------------------
 # Input Files
 # ----------------------------------------------------------
@@ -25,13 +19,6 @@ PERSON_IMAGE = f"{BASE_DIR}/test_images/ladies12.jpg"
 FABRIC_IMAGE = f"{BASE_DIR}/fabric_images/test_fabrics/kurti_fabric6.jpg"
 
 OUTPUT_IMAGE = f"{BASE_DIR}/test_images/ladies_output_img/kurti_17.jpg"
-
-# ----------------------------------------------------------
-# Garment Type
-#
-# "shirt" -> मूळ SAM shirt mask जसाच्या तसा वापरला जातो.
-# "kurta" -> shirt mask वरून rule-based Kurta mask तयार होतो.
-# ----------------------------------------------------------
 
 GARMENT_TYPE = "shirt"
 
@@ -49,7 +36,7 @@ DETECTION_TARGET = "shirt"
 # Initialize Pipeline
 # ----------------------------------------------------------
 
-pipeline = ShirtPipeline()
+pipeline = get_pipeline()
 
 # ----------------------------------------------------------
 # Run Complete Fabric Replacement Pipeline
