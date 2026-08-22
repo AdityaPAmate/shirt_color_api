@@ -1,0 +1,48 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # Model checkpoints (~811 MB) mounted from host instead of baked into
+      # the image -- .dockerignore excludes ai_models/ from the build
+      # context, this volume supplies it at runtime instead. Path INSIDE
+      # the container must match exactly what detector.py / segmenter.py
+      # expect (ai_models/grounding_dino/checkpoints/..., ai_models/sam2/
+      # checkpoints/...).
+      - ./ai_models:/app/ai_models:ro
+
+      # Uploaded person/fabric images + rendered outputs -- mounted so
+      # results are visible on the host filesystem, not locked inside the
+      # container, and persist across container restarts.
+      - ./media:/app/media
+
+      # Debug images written per pipeline stage (fabric.py's numbered
+      # debug_X_description.png files) -- useful to inspect from the host
+      # while iterating.
+      - ./test_images/debug:/app/test_images/debug
+
+    env_file:
+      # .env is excluded from the image build (see .dockerignore) so
+      # secrets aren't baked into image layers. This instead injects it as
+      # runtime container environment variables, which os.environ /
+      # python-dotenv in settings.py can read normally.
+      - .env
+
+    environment:
+      - RUN_MAIN=true   # gunicorn has no autoreloader parent/child split,
+                         # so this just ensures ApiConfig.ready() always
+                         # loads models (matches the runserver guard's
+                         # "true" branch condition) -- harmless under gunicorn.
+
+    # AI model loading at container startup can take a while (CPU-only);
+    # give it room before Docker considers the container unhealthy, if a
+    # healthcheck is added later.
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8000/api/replace-fabric/"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 60s
