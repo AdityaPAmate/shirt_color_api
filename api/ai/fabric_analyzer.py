@@ -41,10 +41,14 @@ NEW: Added detect_pattern_repeat_y() -> vertical (Y-axis) repeat
 NEW: analyze() now also returns "pattern_repeat_y".
 """
 
+import logging
+
 import cv2
 import numpy as np
 import math
 from api.ai.utils import log_execution_time
+
+logger = logging.getLogger(__name__)
 
 
 @log_execution_time
@@ -485,17 +489,17 @@ class FabricAnalyzer:
         if not significant:
             return None
 
-        print("Detected Peaks :", significant)
-        print("Selected Repeat :", max(significant))
+        logger.debug("Detected peaks: %s", significant)
+        logger.debug("Selected repeat: %s", max(significant))
 
-        # NEW: आधी इथे "किमान 2 peaks हवेतच" अशी सक्तीची अट होती --
-        # त्यामुळे खरा, मजबूत correlation असलेला पण single peak असलेला
-        # repeat सुद्धा None म्हणून नाकारला जायचा (उदा. छोट्या crop वर,
-        # किंवा दुसरा peak नेमका 0.75 threshold च्या खाली गेला तर).
-        # energy check (std < 12 -> reject) आणि peak-height check
-        # (correlation.max()*0.75) आधीच खोटे (spurious) peaks गाळतात,
-        # त्यामुळे एकच confident peak सुद्धा आता विश्वासार्ह मानून
-        # स्वीकारतो.
+        # This function used to require at least 2 peaks before
+        # accepting a repeat value -- so a strong, confident single
+        # peak was wrongly rejected as None (e.g. on a small crop,
+        # or when a second peak fell just below the 0.75 threshold).
+        # The energy check above (std < 12 -> reject) and the
+        # peak-height check (correlation.max() * 0.75) already filter
+        # out weak/spurious peaks, so a single confident peak is now
+        # accepted as trustworthy on its own.
         return int(significant[-1])
 
     ####################################################################
@@ -610,12 +614,13 @@ class FabricAnalyzer:
         if not significant:
             return None
 
-        print("Detected Y-Peaks :", significant)
-        print("Selected Y-Repeat :", max(significant))
+        logger.debug("Detected Y-axis peaks: %s", significant)
+        logger.debug("Selected Y-axis repeat: %s", max(significant))
 
-        # NEW: detect_pattern_repeat() प्रमाणेच -- किमान 2 peaks ची सक्ती
-        # काढली. single confident peak (energy + height threshold आधीच
-        # पार केलेला) आता स्वीकारला जातो.
+        # Same reasoning as detect_pattern_repeat(): the "at least 2
+        # peaks required" rule has been removed. A single confident
+        # peak (one that already passed the energy and peak-height
+        # thresholds above) is now accepted.
         return int(significant[-1])
 
     ####################################################################
@@ -644,15 +649,16 @@ class FabricAnalyzer:
 
         edge_ratio = np.count_nonzero(edges) / edges.size
 
-        print(f"Edge Ratio : {edge_ratio:.4f}")
+        logger.debug("Edge ratio: %.4f", edge_ratio)
 
         return edge_ratio > 0.03
 
     def detect_pattern_repeat_fft_fallback(self, gray_crop, min_repeat=8, max_repeat=80):
         """
-        Autocorrelation (2 peaks) fail झाल्यास वापरायचा fallback --
-        लहान crop वरही काम करतो, कारण हा फक्त सर्वात प्रभावी (dominant)
-        single frequency शोधतो, दोन स्पष्ट peaks नाही.
+        Fallback used when the autocorrelation (2-peak) method fails.
+        Works even on small crops, because it only looks for the
+        single strongest (dominant) frequency instead of requiring
+        two clear peaks.
         """
         f = np.fft.fft2(gray_crop.astype(np.float32) - gray_crop.mean())
         fshift = np.abs(np.fft.fftshift(f))
@@ -660,10 +666,10 @@ class FabricAnalyzer:
         h, w = gray_crop.shape
         cy, cx = h // 2, w // 2
 
-        # DC च्या जवळचा भाग (0 frequency) वगळा
+        # Zero out the region near DC (0 frequency)
         fshift[cy - 2:cy + 3, cx - 2:cx + 3] = 0
 
-        # सर्वात मजबूत frequency शोधा
+        # Find the strongest remaining frequency
         max_idx = np.unravel_index(np.argmax(fshift), fshift.shape)
         fy, fx = max_idx
         dist = np.hypot(fy - cy, fx - cx)
