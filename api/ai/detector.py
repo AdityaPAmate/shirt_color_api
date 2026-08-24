@@ -10,6 +10,7 @@ Load the GroundingDINO model once and detect a shirt in an input image.
 from pathlib import Path
 
 import cv2
+from api.ai.utils import log_execution_time
 
 # GroundingDINO
 from groundingdino.util.inference import Model
@@ -59,6 +60,7 @@ class ShirtDetector:
 
         print("GroundingDINO Loaded Successfully.")
 
+    @log_execution_time
     def detect_shirt(
             self,
             image_path,

@@ -44,8 +44,10 @@ NEW: analyze() now also returns "pattern_repeat_y".
 import cv2
 import numpy as np
 import math
+from api.ai.utils import log_execution_time
 
 
+@log_execution_time
 class FabricAnalyzer:
     """
     Analyse the uploaded fabric image.
@@ -486,9 +488,14 @@ class FabricAnalyzer:
         print("Detected Peaks :", significant)
         print("Selected Repeat :", max(significant))
 
-        if len(significant) < 2:
-            return None
-
+        # NEW: आधी इथे "किमान 2 peaks हवेतच" अशी सक्तीची अट होती --
+        # त्यामुळे खरा, मजबूत correlation असलेला पण single peak असलेला
+        # repeat सुद्धा None म्हणून नाकारला जायचा (उदा. छोट्या crop वर,
+        # किंवा दुसरा peak नेमका 0.75 threshold च्या खाली गेला तर).
+        # energy check (std < 12 -> reject) आणि peak-height check
+        # (correlation.max()*0.75) आधीच खोटे (spurious) peaks गाळतात,
+        # त्यामुळे एकच confident peak सुद्धा आता विश्वासार्ह मानून
+        # स्वीकारतो.
         return int(significant[-1])
 
     ####################################################################
@@ -600,12 +607,15 @@ class FabricAnalyzer:
 
         significant = sorted(peaks)
 
-        if len(significant) < 2:
+        if not significant:
             return None
 
         print("Detected Y-Peaks :", significant)
         print("Selected Y-Repeat :", max(significant))
 
+        # NEW: detect_pattern_repeat() प्रमाणेच -- किमान 2 peaks ची सक्ती
+        # काढली. single confident peak (energy + height threshold आधीच
+        # पार केलेला) आता स्वीकारला जातो.
         return int(significant[-1])
 
     ####################################################################

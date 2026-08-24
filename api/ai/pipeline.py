@@ -43,6 +43,9 @@ NEW: Step 4 now passes box=fabric_fit_box (the garment_mask-based
 import os
 import cv2
 import numpy as np
+import psutil
+import threading
+import time
 
 from api.ai.detector import ShirtDetector
 from api.ai.segmenter import ShirtSegmenter
@@ -51,6 +54,7 @@ from api.ai.fabric_analyzer import FabricAnalyzer
 from api.ai.pattern_scale_estimator import PatternScaleEstimator
 from api.ai.garment_template import GarmentTemplate
 from pathlib import Path
+from api.ai.utils import log_execution_time
 
 
 class ShirtPipeline:
@@ -85,7 +89,58 @@ class ShirtPipeline:
     - Print Placement
     - Pattern Alignment
     """
+    def _get_process_memory_mb(self):
+        """
+        Return total RAM currently used by this Python process.
+        """
+        process = psutil.Process(os.getpid())
 
+        memory_bytes = process.memory_info().rss
+
+        return memory_bytes / (1024 * 1024)
+
+
+    def _start_memory_monitor(self):
+        """
+        Continuously monitor this Python process and store
+        the highest RAM usage during pipeline execution.
+        """
+
+        self._memory_monitor_running = True
+
+        self._peak_memory_mb = self._get_process_memory_mb()
+
+        def monitor():
+            while self._memory_monitor_running:
+
+                current_memory_mb = self._get_process_memory_mb()
+
+                if current_memory_mb > self._peak_memory_mb:
+                    self._peak_memory_mb = current_memory_mb
+
+                time.sleep(0.1)
+
+        self._memory_monitor_thread = threading.Thread(
+            target=monitor,
+            daemon=True
+        )
+
+        self._memory_monitor_thread.start()
+
+
+    def _stop_memory_monitor(self):
+        """
+        Stop monitoring and return peak RAM usage.
+        """
+
+        self._memory_monitor_running = False
+
+        self._memory_monitor_thread.join()
+
+        return self._peak_memory_mb
+    # ============================================================
+    # INITIALIZE AI MODELS
+    # ============================================================
     def __init__(self):
         """
         Load every model only once.
@@ -123,10 +178,21 @@ class ShirtPipeline:
 
         print("All AI Models Loaded Successfully.")
 
+        # ========================================================
+        # MEMORY AFTER ALL MODELS ARE LOADED
+        # ========================================================
+
+        models_memory_mb = self._get_process_memory_mb()
+
+        print(
+            f"\nRAM Used After Loading All AI Models : "
+            f"{models_memory_mb:.2f} MB"
+        )
+
     ####################################################################
     # FABRIC REPLACEMENT PIPELINE
     ####################################################################
-
+    @log_execution_time
     def replace_fabric(
         self,
         person_image_path,
@@ -174,6 +240,23 @@ class ShirtPipeline:
         DEBUG_FOLDER = BASE_DIR / "test_images" / "debug"
 
         DEBUG_FOLDER.mkdir(parents=True, exist_ok=True)
+
+        # ============================================================
+        # START WHOLE PIPELINE MEMORY MONITORING
+        # ============================================================
+
+        pipeline_start_memory_mb = self._get_process_memory_mb()
+
+        self._start_memory_monitor()
+
+        print("\n========================================")
+        print("PROJECT MEMORY MONITOR STARTED")
+        print("========================================")
+
+        print(
+            f"RAM Before Pipeline : "
+            f"{pipeline_start_memory_mb:.2f} MB"
+        )
 
         print("\n====================================")
         print("Starting Fabric Replacement Pipeline")
@@ -408,6 +491,48 @@ class ShirtPipeline:
 
         print("\nOutput Path")
         print(output_path)
+
+        # ============================================================
+        # STOP WHOLE PIPELINE MEMORY MONITORING
+        # ============================================================
+
+        peak_memory_mb = self._stop_memory_monitor()
+
+        pipeline_end_memory_mb = self._get_process_memory_mb()
+
+        extra_memory_mb = (
+                peak_memory_mb - pipeline_start_memory_mb
+        )
+
+        # ============================================================
+        # FINAL MEMORY REPORT
+        # ============================================================
+
+        print("\n========================================")
+        print("      PROJECT MEMORY USAGE REPORT")
+        print("========================================")
+
+        print(
+            f"RAM Before Pipeline : "
+            f"{pipeline_start_memory_mb:.2f} MB"
+        )
+
+        print(
+            f"Peak RAM Used       : "
+            f"{peak_memory_mb:.2f} MB"
+        )
+
+        print(
+            f"RAM After Pipeline  : "
+            f"{pipeline_end_memory_mb:.2f} MB"
+        )
+
+        print(
+            f"Extra RAM Required  : "
+            f"{extra_memory_mb:.2f} MB"
+        )
+
+        print("========================================")
 
         print("\nPipeline Completed Successfully.")
 

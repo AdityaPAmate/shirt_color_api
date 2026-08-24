@@ -13,6 +13,7 @@ import numpy as np
 
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+from api.ai.utils import log_execution_time
 
 
 class ShirtSegmenter:
@@ -62,6 +63,7 @@ class ShirtSegmenter:
 
         print("SAM 2.1 Loaded Successfully.")
 
+    @log_execution_time
     def segment_shirt(self, image_path, box):
         """
         Generate a segmentation mask for the shirt.

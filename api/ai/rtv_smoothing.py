@@ -15,6 +15,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 import cv2
+from api.ai.utils import log_execution_time
 
 
 def _compute_texture_weights(fin, sigma, eps=1e-3):
@@ -91,7 +92,7 @@ def rtv_smooth(image_gray_float, lam=0.015, sigma=3.0, iterations=4, eps=1e-3):
 
     return np.clip(S, 0, 1)
 
-
+@log_execution_time
 def extract_rtv_structure(
         person_image_bgr,
         shirt_mask,

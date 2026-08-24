@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
+from api.ai.utils import log_execution_time
 
 
 def xyxy_to_xywh(bbox_xyxy):
@@ -161,7 +162,7 @@ def draw_bbox_for_verification(person_img_path, bbox_xywh, output_folder):
 
     print(f"Verification image saved at: {output_path}")
 
-
+@log_execution_time
 def fit_fabric_to_bbox(
     person_image,
     fabric_image,

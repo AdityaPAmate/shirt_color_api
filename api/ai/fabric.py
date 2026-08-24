@@ -51,6 +51,7 @@ from pathlib import Path
 from api.ai.rtv_smoothing import extract_rtv_structure
 from api.ai.fabric_downsampling import fit_fabric_to_bbox
 from api.ai.fabric_analyzer import FabricAnalyzer
+from api.ai.utils import log_execution_time
 
 
 class FabricRenderer:
@@ -179,7 +180,7 @@ class FabricRenderer:
     # multiplier and blows out light-coloured fabrics to white.
     # Kept here for reference / possible future use.
     ####################################################################
-
+    @log_execution_time
     def estimate_original_shirt_pattern_repeat(self, person_image, shirt_mask):
         mask_bin = (shirt_mask > 0).astype(np.uint8)
         ys, xs = np.where(mask_bin > 0)
@@ -361,7 +362,7 @@ class FabricRenderer:
     ####################################################################
     # RTV STRUCTURE EXTRACTION
     ####################################################################
-
+    @log_execution_time
     def extract_structure_map_rtv(
             self,
             person_image,
@@ -394,16 +395,32 @@ class FabricRenderer:
         sigma = 3.0
         lam = 0.015
 
+        # NEW: pitch_sigma वेगळा ठेवला -- खालच्या busyness-boost ला हे
+        # कळायला हवं की pitch वरून आधीच एक विश्वासार्ह sigma ठरलेला आहे का.
+        pitch_sigma = None
+
         if pattern_repeat:
             try:
                 pitch = min(pattern_repeat) if isinstance(pattern_repeat, (tuple, list)) else pattern_repeat
                 if pitch and pitch > 0:
-                    sigma = max(1.5, min(sigma_cap, pitch * 0.55))
+                    pitch_sigma = max(1.5, min(sigma_cap, pitch * 0.55))
+                    sigma = pitch_sigma
             except Exception:
                 pass
 
         if busyness > 0.5:
-            sigma = max(sigma, sigma_cap * 0.5)
+            if pitch_sigma is not None:
+                # NEW (bug fix): आधी इथे बिनशर्त sigma = sigma_cap*0.5
+                # ठरायचं -- pitch वरून आधीच एक अचूक sigma (fabric च्या
+                # स्वतःच्या repeat-अंतरावरून calibrate केलेला) ठरलेला
+                # असला तरीही तो पूर्णपणे झाकोळला जायचा. pitch_sigma
+                # जास्त विश्वासार्ह आधार आहे, म्हणून busyness साठी फक्त
+                # सौम्य (30%) boost देतो, sigma_cap*0.5 वर उडी नाही.
+                sigma = max(sigma, pitch_sigma * 1.3)
+            else:
+                # pitch माहीत नसेल (detection fail) तरच जुनी aggressive
+                # fallback strategy वापरायची.
+                sigma = max(sigma, sigma_cap * 0.5)
             lam = 0.03
 
         # ---- हे print जरूर ठेवा -- पुढच्या run मध्ये actual sigma बघून confirm करा ----
@@ -412,15 +429,30 @@ class FabricRenderer:
             f"sigma_cap: {sigma_cap:.2f}, final sigma: {sigma:.2f}, lam: {lam}"
         )
 
+        # NEW (performance fix): iterations 6 वरून 4 केले.
+        #
+        # rtv_smooth() मधला प्रत्येक iteration एक महागडा sparse direct
+        # solve (spsolve) चालवतो -- हाच पूर्ण pipeline मधला सगळ्यात मोठा
+        # वेळ खाणारा भाग आहे (confirmed timer logs: extract_rtv_structure
+        # 77-109 sec, संपूर्ण render() च्या ~65-85%).
+        #
+        # मूळ RTV पेपर (Xu et al., SIGGRAPH Asia 2012) आणि rtv_smooth()
+        # फंक्शनचा स्वतःचा default दोन्ही 4 iterations सुचवतात -- 6 हा
+        # जास्तीचा खर्च होता, ज्याने गुणवत्तेत फार मोठा फरक पडत नाही
+        # (RTV हे iterative-refinement असलं तरी सुरुवातीच्या काही
+        # iterations मध्येच बहुतांश structure/texture separation
+        # converge होतं).
+        RTV_ITERATIONS = 4
+
         shading_map = extract_rtv_structure(
-            person_image, shirt_mask, sigma=sigma, lam=lam, iterations=6
+            person_image, shirt_mask, sigma=sigma, lam=lam, iterations=RTV_ITERATIONS
         )
         return shading_map
-
         ####################################################################
         # SHIRT BUSYNESS ESTIMATION
         ####################################################################
 
+    @log_execution_time
     def estimate_shirt_busyness_map(self, person_image, shirt_mask, window=15):
         """
         Fixed constant (/40.0) ऐवजी, प्रत्येक फोटोच्या स्वतःच्या actual
@@ -442,29 +474,47 @@ class FabricRenderer:
             return np.zeros_like(local_std, dtype=np.float32)
 
         # ------------------------------------------------------------
-        # NEW: fixed /40.0 ऐवजी, या फोटोतल्या शर्ट भागातल्या 95th
-        # percentile वरून normalize करा -- adaptive, self-calibrating.
+        # NEW: Boundary-contamination fix.
+        #
+        # शर्टाच्या कडेजवळचे pixels (background ला लागून) local_std
+        # मध्ये कृत्रिमरित्या जास्त येतात -- कारण 15x15 window मध्ये
+        # शर्ट + background दोन्हीचा तीव्र contrast मिसळतो (हे खरं
+        # print/busyness नाही, फक्त segmentation-edge artifact आहे).
+        #
+        # ref_high (95th percentile) हा संपूर्ण मॅपसाठी एकच normalization
+        # threshold असल्याने, हे थोडे contaminated कडेवरचे pixels सुद्धा
+        # तो threshold उगीच वर ओढू शकतात -> संपूर्ण busyness_map skewed
+        # होतो.
+        #
+        # म्हणून ref_high फक्त शर्टच्या खऱ्या आतल्या भागावरून (window
+        # इतक्याच kernel ने eroded mask) काढतो. अंतिम busyness_map मात्र
+        # पूर्ण मास्कवरच राहतो (खाली) -- फक्त normalization reference
+        # स्वच्छ केला आहे.
         # ------------------------------------------------------------
-        ref_high = np.percentile(local_std[mask], 95)
+        erosion_kernel = np.ones((window, window), np.uint8)
+        interior_mask = cv2.erode(mask.astype(np.uint8), erosion_kernel) > 0
+
+        reference_mask = interior_mask if interior_mask.sum() > 0 else mask
+
+        ref_high = np.percentile(local_std[reference_mask], 95)
         ref_high = max(ref_high, 1e-3)  # divide-by-zero टाळण्यासाठी
 
         busyness_map = np.clip(local_std / ref_high, 0.0, 1.0)
 
         print(
-            "Busyness map stats -> ref_high(95th pct):", ref_high,
+            "Busyness map stats -> ref_high(95th pct, interior-only):", ref_high,
             "| mean over shirt:", float(np.mean(busyness_map[mask])),
             "| max:", float(np.max(busyness_map[mask]))
         )
 
         return busyness_map * mask.astype(np.float32)
 
-
     ####################################################################
     # CHROMATICITY-BASED MATERIAL EDGE MASK
     # (Classical Intrinsic Image Decomposition -- Retinex-style
     # colour-ratio test. कुठलाही Neural Network नाही, फक्त gradients.)
     ####################################################################
-
+    @log_execution_time
     def estimate_material_edge_mask(self, person_image, shirt_mask):
         """
         NEW (v2): Region-based classical intrinsic decomposition.
@@ -551,7 +601,7 @@ class FabricRenderer:
     ####################################################################
     # FLAT-PATCH DETECTOR (achromatic logos/trims — chroma नाही तरी पकडतो)
     ####################################################################
-
+    @log_execution_time
     def estimate_flat_patch_mask(self, person_image, shirt_mask):
         """
         Chroma-based check (a/b) फक्त रंगीत material बदल पकडतो. पण logo/
@@ -625,7 +675,7 @@ class FabricRenderer:
     ####################################################################
     # RESIDUAL FINE-GRAIN CLEANUP (शेवटचा polish pass)
     ####################################################################
-
+    @log_execution_time
     def remove_residual_fine_grain(self, shading_map, shirt_mask):
         """
         वरच्या सगळ्या स्टेप्सनंतरही sleeve सारख्या भागात उरलेला बारीक
@@ -665,7 +715,7 @@ class FabricRenderer:
     ####################################################################
     # DEBUG VISUALIZATION HELPER (adaptive — कुठलाही fixed multiplier नाही)
     ####################################################################
-
+    @log_execution_time
     def _debug_visualize_map(self, value_map):
         """
         shading_map च्या values साधारण 0.3-1.6 range मध्ये (float)
@@ -690,7 +740,7 @@ class FabricRenderer:
     ####################################################################
     # SEPARATE REAL FOLDS FROM RESIDUAL TEXTURE
     ####################################################################
-
+    @log_execution_time
     def separate_real_folds_from_texture(
             self, shading_map, busyness_map=None, busyness=0.0,
             large_fold_radius=25, pattern_pitch=None
@@ -770,7 +820,7 @@ class FabricRenderer:
     ####################################################################
     # ENHANCE FOLD CONTRAST (edge-aware unsharp masking)
     ####################################################################
-
+    @log_execution_time
     def enhance_fold_contrast(
             self,
             shading_map,
@@ -829,8 +879,13 @@ class FabricRenderer:
         center = (lo + hi) / 2.0
         half_range = (hi - lo) / 2.0
 
+        # NEW (पारदर्शकता fix): आधी इथे संपूर्ण (न-masked) enhanced array
+        # चा std print व्हायचा, तर clip_range प्रत्यक्षात शर्ट-भागाच्याच
+        # (masked sample) std वरून काढलेला असायचा -- दोन वेगळे numbers,
+        # पण print मध्ये एकच वाटायचे. गोंधळ टाळण्यासाठी आता खरा masked std
+        # (जो calculation मध्ये वापरला तोच) print करतो.
         print(
-            f"enhance_fold_contrast -> measured_std: {float(np.std(enhanced)):.5f}, "
+            f"enhance_fold_contrast -> measured_std(masked): {measured_std:.5f}, "
             f"clip_range used: ({lo:.3f}, {hi:.3f})"
         )
 
@@ -844,7 +899,7 @@ class FabricRenderer:
     ####################################################################
     # APPLY STRUCTURE MAP (Lab L-channel, highlight-safe)
     ####################################################################
-
+    @log_execution_time
     def apply_structure_map_lab(
             self,
             fabric_image,
@@ -870,7 +925,39 @@ class FabricRenderer:
         L_out = np.empty_like(L)
 
         #newly added ----------------
-        shadow_strength = 2.9
+        # NEW (Issue #14, Round 3 fix): fixed shadow_strength=2.9 ऐवजी
+        # adaptive.
+        #
+        # जुना fixed 2.9x multiplier गृहीत धरत होता की shading_map मधलं
+        # deviation नेहमी सूक्ष्म असतं (म्हणून मोठा boost हवा, खरे folds
+        # ठळक दिसण्यासाठी). पण जेव्हा shading_map मध्ये आधीच मोठं deviation
+        # असतं (उदा. embroidery motifs मुळे RTV ने जतन केलेला strong
+        # signal), तेव्हा हाच fixed multiplier त्याला अवाढव्य गडद करतो --
+        # विशेषतः पांढऱ्या/फिकट नवीन fabric वर हे स्पष्ट दिसतं.
+        #
+        # आता शर्ट भागातल्या ACTUAL darkening-deviation च्या 95th
+        # percentile वरून adaptive strength काढतो -- लक्ष्य असं की
+        # सगळ्यात गडद (95th percentile) pixel सुद्धा जास्तीत जास्त ~40%
+        # गडद व्हावा, त्यापेक्षा जास्त नाही. deviation आधीच मोठं असेल
+        # (जास्त shading signal), तर strength आपोआप कमी होईल.
+        darken_deviation = 1.0 - shading_map[~brighten_mask]
+
+        if darken_deviation.size > 0:
+            ref_deviation = float(np.percentile(darken_deviation, 95))
+        else:
+            ref_deviation = 0.0
+
+        ref_deviation = max(ref_deviation, 1e-3)
+
+        TARGET_MAX_DARKEN = 0.40  # 95th percentile pixel जास्तीत जास्त
+        # किती गडद व्हावा (fraction)
+
+        shadow_strength = np.clip(TARGET_MAX_DARKEN / ref_deviation, 1.0, 3.0)
+
+        print(
+            f"apply_structure_map_lab -> adaptive shadow_strength: "
+            f"{shadow_strength:.3f} (ref_deviation 95th pct: {ref_deviation:.4f})"
+        )
 
         # गडद करताना (shading < 1) -> साधा multiply पुरेसा आहे
         shadow_map = 1.0 - (1.0 - shading_map[~brighten_mask]) * shadow_strength
@@ -1138,7 +1225,7 @@ class FabricRenderer:
     ####################################################################
     # APPLY SHIRT MASK
     ####################################################################
-
+    @log_execution_time
     def apply_shirt_mask(self, person_image, shirt_mask, prepared_fabric):
         """
         NEW: Binary threshold ऐवजी feathered (soft) alpha-blend वापरतो
@@ -1161,7 +1248,7 @@ class FabricRenderer:
     ####################################################################
     # COMPLETE FABRIC RENDER
     ####################################################################
-
+    @log_execution_time
     def render(
             self,
             person_image,
@@ -1320,6 +1407,136 @@ class FabricRenderer:
             # बदल chroma पकडतो, achromatic logo/trim flat_patch पकडतो
             material_edge_weight = np.maximum(chroma_weight, flat_patch_weight)
 
+            # डिबग: chroma आणि flat_patch वेगवेगळे save करतो, जेणेकरून
+            # भविष्यात कुठला signal जास्त aggressively fire होतोय ते
+            # डोळ्यांनी लगेच बघता येईल.
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_2.3a_chroma_weight.png"),
+                self._debug_visualize_map(chroma_weight)
+            )
+            cv2.imwrite(
+                str(DEBUG_FOLDER / "debug_2.3b_flat_patch_weight.png"),
+                self._debug_visualize_map(flat_patch_weight)
+            )
+
+            # ----------------------------------------------------------
+            # NEW (root-cause fix): Coverage-based sanity check.
+            #
+            # खरा material edge (zipper, seam, isolated logo/trim) कधीच
+            # गारमेंटचा मोठा भाग व्यापत नाही -- तो नेहमी छोट्या,
+            # localized भागापुरता मर्यादित असतो.
+            #
+            # पण chroma_weight (glossy fabric वरच्या नैसर्गिक sheen/
+            # highlight मुळे) आणि flat_patch_weight (fabric च्या स्वतःच्या
+            # बारीक विणीशी window-size जुळून moiré artifact तयार झाल्याने)
+            # दोन्ही कधीकधी जवळपास *संपूर्ण* गारमेंटवर चुकीने उच्च वजन
+            # देतात -- हे प्रत्यक्ष debug images मधून (checkerboard artifact,
+            # जवळपास पूर्ण-पांढरा chroma map) दिसलं आहे.
+            #
+            # म्हणून: material_edge_weight ने गारमेंटचा किती भाग "उच्च"
+            # (>0.5) व्यापला आहे ते मोजतो. जर हा भाग एका वाजवी मर्यादेपेक्षा
+            # (coverage_limit) जास्त असेल, तर हे genuine localized defect
+            # नसून widespread texture/artifact misfire आहे असं गृहीत धरून,
+            # संपूर्ण weight map ला त्याच प्रमाणात खाली आणतो -- जेणेकरून तो
+            # संपूर्ण गारमेंटची shading उडवू शकणार नाही, तरीही खरोखर छोटा,
+            # स्पष्ट defect असेल तर तो suppress होतच राहतो.
+            # ----------------------------------------------------------
+            # ----------------------------------------------------------
+            # NEW (Issue #14, Round 3 fix): Round 1 चा coverage-based
+            # blanket scale-down हा "blunt instrument" ठरला -- त्याने
+            # संपूर्ण weight map ला सरसकट एकाच फॅक्टरने गुणलं, त्यामुळे
+            # खऱ्या localized motifs वरचं suppression सुद्धा तितकंच कमी
+            # झालं जितकं खोट्या widespread glossy-artifact वरचं (debug_2.1
+            # नेच सिद्ध केलं की motifs RTV स्टेजपासूनच शेडिंगमध्ये चिकटलेले
+            # असतात -- suppression ला तिथे जास्तीत जास्त ताकद हवी होती,
+            # कमी नाही).
+            #
+            # आता connected-component आकारावरून फिल्टर करतो:
+            # - खरा localized defect (motif/zipper/seam/trim) नेहमी
+            #   छोटा, विखुरलेला blob असतो.
+            # - glossy-sheen/moiré असा खोटा positive एक/काही मोठे,
+            #   जवळपास संपूर्ण गारमेंट व्यापणारे blobs म्हणून दिसतो.
+            #
+            # छोटे blobs (खरे motifs) संपूर्ण ताकदीने suppress होत
+            # राहतात; मोठे blobs (खोटा artifact) सौम्य केले जातात.
+            # ----------------------------------------------------------
+            binary_high = (material_edge_weight > 0.5).astype(np.uint8)
+
+            # ----------------------------------------------------------
+            # NEW (Issue #14, Round 4 fix): "wavy pattern" चं नेमकं मूळ
+            # सापडलं -- Round 3 च्या component-filtering मध्ये size
+            # threshold (3%) दाट checkerboard/moiré grid ला एकच मोठा
+            # component म्हणून ओळखू शकत नव्हता, कारण grid मधला प्रत्येक
+            # छोटा चौकोन (square/diamond) स्वतंत्र, वेगळा connected
+            # component ठरत होता -- प्रत्येक एकेकटा 3% पेक्षा लहान.
+            # त्यामुळे संपूर्ण grid सुटला, आणि suppressed-vs-unsuppressed
+            # चौकोनांचा तोच नियमित पॅटर्न final shading मध्ये
+            # (suppression द्वारेच) पुन्हा तयार झाला -- हाच "wavy pattern".
+            #
+            # आता classification साठी (फक्त निर्णय घ्यायला, प्रत्यक्ष
+            # suppression साठी नाही) एक adaptive morphological CLOSING
+            # आधी लावतो -- जवळजवळ, दाटीने असलेले छोटे blobs (grid चे
+            # चौकोन) एकत्र merge होऊन एकच मोठा component बनतात, आणि मग
+            # तो 3% threshold पार करून योग्य प्रकारे suppress होतो.
+            #
+            # खरे, विरळ motifs (एकमेकांपासून लांब अंतरावर) या closing
+            # ने merge होत नाहीत -- ते वेगळे, छोटे components राहतात,
+            # आणि त्यांचं पूर्ण-ताकदीचं suppression आधीसारखंच टिकतं.
+            # ----------------------------------------------------------
+
+            ys_shirt, xs_shirt = np.where(mask_bool)
+            crop_min_dim = max(
+                1, min(ys_shirt.max() - ys_shirt.min(), xs_shirt.max() - xs_shirt.min())
+            ) if ys_shirt.size > 0 else 1
+
+            closing_size = max(15, int(crop_min_dim * 0.05))
+            if closing_size % 2 == 0:
+                closing_size += 1
+            closing_kernel = np.ones((closing_size, closing_size), np.uint8)
+
+            merged_binary = cv2.morphologyEx(
+                binary_high, cv2.MORPH_CLOSE, closing_kernel
+            )
+
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                merged_binary, connectivity=8
+            )
+
+            shirt_area = float(mask_bool.sum())
+            MAX_COMPONENT_FRACTION = 0.03  # एकटा खरा defect साधारण
+                                            # गारमेंटच्या 3% पेक्षा मोठा
+                                            # blob म्हणून कधीच दिसत नाही
+            LARGE_COMPONENT_SUPPRESS = 0.15  # मोठ्या (खोट्या) blobs ना
+                                              # किती खाली आणायचं
+
+            large_components_found = 0
+
+            for label_id in range(1, num_labels):  # 0 = background
+                component_area = stats[label_id, cv2.CC_STAT_AREA]
+                fraction = component_area / max(shirt_area, 1.0)
+
+                if fraction > MAX_COMPONENT_FRACTION:
+                    # NEW: suppression फक्त त्या pixels वर लागू करतो जे
+                    # मूळात (closing च्या आधी) खरोखर high-weight होते --
+                    # closing मुळे भरलेल्या "फटी" वर नाही. यामुळे
+                    # suppression चे किनारे कृत्रिमरित्या रुंद/blocky
+                    # होत नाहीत.
+                    component_region = (labels == label_id)
+                    target_pixels = component_region & (binary_high.astype(bool))
+                    material_edge_weight[target_pixels] *= LARGE_COMPONENT_SUPPRESS
+                    large_components_found += 1
+
+            print(
+                f"material_edge_weight component-filtered (closing_size={closing_size}) -> "
+                f"{num_labels - 1} merged components found, "
+                f"{large_components_found} large (>{MAX_COMPONENT_FRACTION*100:.0f}% "
+                f"of shirt) suppressed to {LARGE_COMPONENT_SUPPRESS*100:.0f}% strength"
+            )
+
+            print(
+                "material_edge_weight (final) -> mean over shirt:",
+                float(np.mean(material_edge_weight[mask_bool]))
+            )
             shading_map = 1.0 + (shading_map - 1.0) * (1.0 - material_edge_weight)
 
             cv2.imwrite(

@@ -37,6 +37,7 @@ Important:
 
 import cv2
 import numpy as np
+from api.ai.utils import log_execution_time
 
 
 class GarmentTemplate:
@@ -1126,6 +1127,7 @@ class GarmentTemplate:
     # ================================================================
     # 13. PUBLIC METHOD
     # ================================================================
+    @log_execution_time
     def get_garment_mask(
         self,
         shirt_mask,
