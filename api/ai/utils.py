@@ -1,16 +1,18 @@
 ####################################################################
-# EXECUTION TIME LOGGER (डिबगिंगसाठी — कुठला function किती वेळ
-# घेतो हे टर्मिनलवर लॉग करण्यासाठी)
+# EXECUTION TIME LOGGER (For debugging - logs function execution time)
 ####################################################################
 
 import time
 import functools
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def log_execution_time(func):
     """
-    Decorator: कुठल्याही function ला हा लावला की, तो function
-    चालायला किती सेकंद लागले हे टर्मिनलवर प्रिंट होतं.
+    Decorator: Measures how many seconds a function takes to execute
+    and logs the execution time.
 
     Usage
     -----
@@ -18,7 +20,8 @@ def log_execution_time(func):
         def some_function(...):
             ...
 
-    हे function ची body अजिबात बदलत नाही -- फक्त बाहेरून वेळ मोजतं.
+    This does not change the function's internal logic.
+    It only measures the execution time from outside.
     """
 
     @functools.wraps(func)
@@ -30,7 +33,9 @@ def log_execution_time(func):
         end_time = time.perf_counter()
         elapsed = end_time - start_time
 
-        print(f"[TIMER] {func.__qualname__} took {elapsed:.4f} sec")
+        logger.info(
+            f"[TIMER] {func.__qualname__} took {elapsed:.4f} sec"
+        )
 
         return result
 
