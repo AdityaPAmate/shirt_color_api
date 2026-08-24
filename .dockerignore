@@ -1,41 +1,42 @@
-# --- Python / venv ---
-venv/
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.egg-info/
 .pytest_cache/
 
-# --- Model checkpoints (large, ~811 MB) ---
-# Excluded from the image for LOCAL testing -- mounted as a volume instead
-# via docker-compose.yml, so editing code doesn't force a slow re-copy of
-# these on every image rebuild.
-# NOTE: remove this line later when building an image meant to actually be
-# pushed/deployed (Render/GCP), unless checkpoints are fetched at startup
-# or mounted from cloud storage there too.
-ai_models/
+# Virtual environments
+venv/
+.venv/
 
-# --- Git / IDE / OS junk ---
+# Git and IDE
 .git/
 .gitignore
 .idea/
 .vscode/
+
+# Environment variables and secrets
+.env
+
+# Local database
+db.sqlite3
+
+# Local media and test artifacts
+media/
+test_images/
+test_fabrics/
+fabric_images/
+output/
+output_tests_fabrics/
+
+# Local development files
+.memory/
+pip_freeze_check.txt
 *.log
+
+# OS files
 .DS_Store
 Thumbs.db
 
-# --- Env / secrets ---
-.env
-
-# --- Local dev artifacts that shouldn't ship in the image ---
-db.sqlite3
-media/uploads/
-media/outputs/
-test_images/debug/
-output_tests_fabrics/
-pip_freeze_check.txt
-
-# --- Anything Docker-related itself (avoid copying into its own context weirdly) ---
-Dockerfile
-.dockerignore
+# Docker local configuration
 docker-compose.yml
