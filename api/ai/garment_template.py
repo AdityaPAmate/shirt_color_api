@@ -37,7 +37,11 @@ Important:
 
 import cv2
 import numpy as np
+import logging
 from api.ai.utils import log_execution_time
+
+
+logger = logging.getLogger(__name__)
 
 
 class GarmentTemplate:
@@ -299,7 +303,7 @@ class GarmentTemplate:
             )
 
             row_data.append(info)
-        print(row_data)
+        logger.info("Row-by-row scan data (from bottom to top): %s", row_data)
 
         return row_data, lower_region_start
 

@@ -1,18 +1,22 @@
+import logging
+
 import cv2
 import numpy as np
 import os
 from pathlib import Path
 from api.ai.utils import log_execution_time
 
+logger = logging.getLogger(__name__)
+
 
 def xyxy_to_xywh(bbox_xyxy):
     """
-    GroundingDINO चा output (x1, y1, x2, y2) format मध्ये असतो
-    (Hugging Face अधिकृत डॉक्युमेंटेशन नुसार: top_left_x, top_left_y,
-    bottom_right_x, bottom_right_y).
+    GroundingDINO's output is in (x1, y1, x2, y2) format
+    (per the official Hugging Face documentation:
+    top_left_x, top_left_y, bottom_right_x, bottom_right_y).
 
-    हे function त्याला (x, y, w, h) मध्ये convert करतं,
-    आणि float coordinates ना pixel indexing साठी integer मध्ये round करतं.
+    This function converts that to (x, y, w, h), and rounds
+    the float coordinates to integers for pixel indexing.
     """
 
     x1, y1, x2, y2 = bbox_xyxy
@@ -27,8 +31,9 @@ def xyxy_to_xywh(bbox_xyxy):
 
 def compute_uniform_scale(fabric_w, fabric_h, bbox_w, bbox_h):
     """
-    Fabric ला bbox मध्ये पूर्णपणे (कुठेही रिकामी जागा न ठेवता) बसवण्यासाठी
-    लागणारा एकच (uniform) scale काढतो. Aspect ratio कायम राहतो.
+    Computes the single (uniform) scale needed to fit the fabric
+    completely into the bbox (no empty space left anywhere).
+    Aspect ratio is preserved.
     """
 
     scale_x = bbox_w / fabric_w
@@ -41,7 +46,7 @@ def compute_uniform_scale(fabric_w, fabric_h, bbox_w, bbox_h):
 
 def resize_fabric_uniform(fabric_img, scale):
     """
-    Fabric ला दिलेल्या scale ने resize करतो (aspect ratio सांभाळून).
+    Resizes the fabric by the given scale (preserving aspect ratio).
     """
 
     fabric_h, fabric_w = fabric_img.shape[:2]
@@ -49,8 +54,8 @@ def resize_fabric_uniform(fabric_img, scale):
     new_w = int(round(fabric_w * scale))
     new_h = int(round(fabric_h * scale))
 
-    # scale लहान करताना (downsample) INTER_AREA,
-    # मोठं करताना (upsample) INTER_LANCZOS4
+    # Downsampling (scale < 1.0) uses INTER_AREA,
+    # upsampling (scale >= 1.0) uses INTER_LANCZOS4
     interpolation = (
         cv2.INTER_AREA
         if scale < 1.0
@@ -62,15 +67,15 @@ def resize_fabric_uniform(fabric_img, scale):
         (new_w, new_h),
         interpolation=interpolation
     )
-    print('resized:', resized.shape)
+    logger.info("Fabric resized, new shape: %s", resized.shape)
 
     return resized
 
 
 def center_crop_to_bbox(resized_fabric, bbox_w, bbox_h):
     """
-    Resize केलेला fabric (जो bbox पेक्षा किंचित मोठा असू शकतो)
-    मधोमध पकडून exact bbox size ला crop करतो.
+    Center-crops the resized fabric (which may be slightly larger
+    than the bbox) down to the exact bbox size.
     """
 
     resized_h, resized_w = resized_fabric.shape[:2]
@@ -83,14 +88,14 @@ def center_crop_to_bbox(resized_fabric, bbox_w, bbox_h):
         start_x:start_x + bbox_w
     ]
 
-    print("cropped shape: ", cropped.shape)
+    logger.info("Fabric cropped, final shape: %s", cropped.shape)
 
     return cropped
 
 
 def create_black_canvas(person_h, person_w, channels):
     """
-    Person image एवढ्याच size चा पूर्ण काळा canvas तयार करतो.
+    Creates a fully black canvas the same size as the person image.
     """
 
     canvas = np.zeros(
@@ -103,11 +108,10 @@ def create_black_canvas(person_h, person_w, channels):
 
 def paste_fabric_on_canvas(canvas, cropped_fabric, bbox_x, bbox_y):
     """
-    Cropped fabric ला black canvas वर bbox च्या (x, y)
-    location वर paste करतो.
+    Pastes the cropped fabric onto the black canvas at the bbox's
+    (x, y) location.
     """
-    print('bbox x', bbox_x)
-    print('bbox y', bbox_y)
+    logger.info("Placing fabric on canvas at x=%s, y=%s", bbox_x, bbox_y)
     bbox_h, bbox_w = cropped_fabric.shape[:2]
 
     canvas[
@@ -120,9 +124,9 @@ def paste_fabric_on_canvas(canvas, cropped_fabric, bbox_x, bbox_y):
 
 def draw_bbox_for_verification(person_img_path, bbox_xywh, output_folder):
     """
-    Person image वर दिलेला bbox rectangle काढून save करतो,
-    जेणेकरून bbox खऱ्या shirt location वर बरोबर बसतो का
-    ते डोळ्यांनी तपासता येईल.
+    Draws the given bbox rectangle on the person image and saves it,
+    so the bbox placement can be visually verified against the
+    actual shirt location.
 
     NOTE: This function still expects a FILE PATH (string), not a
     numpy array, because it calls cv2.imread() internally. It is
@@ -136,9 +140,9 @@ def draw_bbox_for_verification(person_img_path, bbox_xywh, output_folder):
     person_img = cv2.imread(person_img_path)
 
     if person_img is None:
-        print(
-            f"Error: person image वाचता आली नाही -> "
-            f"{person_img_path}"
+        logger.error(
+            "Could not read the person image at this path: %s",
+            person_img_path
         )
         return
 
@@ -150,7 +154,7 @@ def draw_bbox_for_verification(person_img_path, bbox_xywh, output_folder):
         img_with_box,
         (bbox_x, bbox_y),
         (bbox_x + bbox_w, bbox_y + bbox_h),
-        (0, 0, 255),  # लाल रंग (BGR)
+        (0, 0, 255),  # red (BGR)
         thickness=3
     )
 
@@ -160,7 +164,7 @@ def draw_bbox_for_verification(person_img_path, bbox_xywh, output_folder):
 
     cv2.imwrite(output_path, img_with_box)
 
-    print(f"Verification image saved at: {output_path}")
+    logger.info("Verification image saved here: %s", output_path)
 
 @log_execution_time
 def fit_fabric_to_bbox(
@@ -172,9 +176,9 @@ def fit_fabric_to_bbox(
     """
     Main fabric-to-bounding-box fitting function.
 
-    Fabric ला bbox च्या size मध्ये (aspect ratio सांभाळून) बसवून,
-    person image एवढ्या size च्या काळ्या canvास वर bbox location वर
-    paste करतो.
+    Fits the fabric into the bbox size (preserving aspect ratio),
+    then pastes it onto a black canvas the same size as the person
+    image, at the bbox location.
 
     IMPORTANT (pipeline integration change):
     person_image and fabric_image are now expected to be already
@@ -192,7 +196,7 @@ def fit_fabric_to_bbox(
     # fabric_image = f"{BASE_DIR}/fabric_images/floral_fabric7.png"
     output_folder_path = f"{BASE_DIR}/test_images/bbox_fit_output"
 
-    # तुमचा actual GroundingDINO output (x1, y1, x2, y2) format मध्ये
+    # Example of the actual GroundingDINO output, in (x1, y1, x2, y2) format:
     # groundingdino_bbox_xyxy = [
     #     362.3363037109375,
     #     672.457275390625,
@@ -220,42 +224,42 @@ def fit_fabric_to_bbox(
     fabric_img = fabric_image
 
     if person_img is None:
-        print(f"ERROR: Person image आहे None -> {person_image}")
+        logger.error("Person image is None: %s", person_image)
         return
 
     if fabric_img is None:
-        print(f"ERROR: Fabric image आहे None -> {fabric_image}")
+        logger.error("Fabric image is None: %s", fabric_image)
         return
 
     person_h, person_w, channels = person_img.shape
     fabric_h, fabric_w = fabric_img.shape[:2]
     bbox_x, bbox_y, bbox_w, bbox_h = bbox_xywh
 
-    # Safety check: bbox person image च्या आत बसतो का
+    # Safety check: does the bbox stay inside the person image
     if bbox_x < 0 or bbox_y < 0 or bbox_w <= 0 or bbox_h <= 0:
-        print("ERROR: BBox coordinates invalid आहेत.")
+        logger.error("BBox coordinates are not valid.")
         return
 
     if (bbox_x + bbox_w) > person_w or (bbox_y + bbox_h) > person_h:
-        print("ERROR: BBox person image च्या बाहेर जातो आहे.")
+        logger.error("BBox goes outside the person image.")
         return
 
-    # Step 1: uniform scale काढा
+    # Step 1: compute the uniform scale
     scale = compute_uniform_scale(fabric_w, fabric_h, bbox_w, bbox_h)
 
-    # Step 2: resize करा
+    # Step 2: resize
     resized_fabric = resize_fabric_uniform(fabric_img, scale)
 
-    # Step 3: bbox size ला exact crop करा
+    # Step 3: crop to the exact bbox size
     cropped_fabric = center_crop_to_bbox(resized_fabric, bbox_w, bbox_h)
 
-    # Step 4: black canvas तयार करा
+    # Step 4: create the black canvas
     canvas = create_black_canvas(person_h, person_w, channels)
 
-    # Step 5: cropped fabric bbox location वर paste करा
+    # Step 5: paste the cropped fabric at the bbox location
     final_output = paste_fabric_on_canvas(canvas, cropped_fabric, bbox_x, bbox_y)
 
-    # Step 6: save करा
+    # Step 6: save
     # This debug save still uses a fixed disk path (not returned to the
     # caller as a path) -- it is only for manual inspection while
     # testing, it does not affect what fit_fabric_to_bbox() returns.
@@ -263,6 +267,6 @@ def fit_fabric_to_bbox(
     output_path = os.path.join(output_folder_path, "fabric_fitted_to_bbox4.png")
     cv2.imwrite(output_path, final_output)
 
-    print(f"Saved at: {output_path}")
+    logger.info("Fitted fabric saved here: %s", output_path)
 
     return final_output
