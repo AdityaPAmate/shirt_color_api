@@ -46,6 +46,7 @@ import numpy as np
 import psutil
 import threading
 import time
+import logging
 
 from api.ai.detector import ShirtDetector
 from api.ai.segmenter import ShirtSegmenter
@@ -55,6 +56,8 @@ from api.ai.pattern_scale_estimator import PatternScaleEstimator
 from api.ai.garment_template import GarmentTemplate
 from pathlib import Path
 from api.ai.utils import log_execution_time
+
+logger = logging.getLogger(__name__)
 
 
 class ShirtPipeline:
@@ -150,7 +153,7 @@ class ShirtPipeline:
         Therefore we initialize them only once.
         """
 
-        print("\nLoading AI Models...")
+        logger.info("Loading AI models...")
 
         self.detector = ShirtDetector()
 
@@ -176,7 +179,7 @@ class ShirtPipeline:
         # ----------------------------------------------------------
         self.garment_template = GarmentTemplate()
 
-        print("All AI Models Loaded Successfully.")
+        logger.info("All AI models loaded successfully.")
 
         # ========================================================
         # MEMORY AFTER ALL MODELS ARE LOADED
@@ -184,9 +187,9 @@ class ShirtPipeline:
 
         models_memory_mb = self._get_process_memory_mb()
 
-        print(
-            f"\nRAM Used After Loading All AI Models : "
-            f"{models_memory_mb:.2f} MB"
+        logger.info(
+            "RAM used after loading AI models: %.2f MB",
+            models_memory_mb
         )
 
     ####################################################################
@@ -249,35 +252,33 @@ class ShirtPipeline:
 
         self._start_memory_monitor()
 
-        print("\n========================================")
-        print("PROJECT MEMORY MONITOR STARTED")
-        print("========================================")
-
-        print(
-            f"RAM Before Pipeline : "
-            f"{pipeline_start_memory_mb:.2f} MB"
+        logger.info(
+            "Starting fabric replacement pipeline | "
+            "Garment type: %s | Detection target: %s | RAM before pipeline: %.2f MB",
+            garment_type,
+            detection_target,
+            pipeline_start_memory_mb
         )
-
-        print("\n====================================")
-        print("Starting Fabric Replacement Pipeline")
-        print("====================================")
-        print("Garment Type      :", garment_type)
-        print("Detection Target  :", detection_target)
 
         ############################################################
         # STEP 1
         ############################################################
 
-        print("\nStep 1 : Detect Shirt")
+        logger.info(
+            "Step 1: Starting garment detection | Target: %s",
+            detection_target
+        )
 
         detection = self.detector.detect_shirt(
             person_image_path,
             detection_target=detection_target
         )
 
-        print("Detection Completed")
-        print("Bounding Box :", detection["box"])
-        print("Confidence   :", detection["confidence"])
+        logger.info(
+            "Step 1 completed | Box: %s | Confidence: %s",
+            detection["box"],
+            detection["confidence"]
+        )
 
         # ----------------------------------------------------------
         # NEW (moved up): read person_image here, right after
@@ -314,14 +315,14 @@ class ShirtPipeline:
         # STEP 2
         ############################################################
 
-        print("\nStep 2 : Generate Shirt Mask")
+        logger.info("Step 2: Starting shirt mask generation")
 
         shirt_mask = self.segmenter.segment_shirt(
             person_image_path,
             detection["box"]
         )
 
-        print("Mask Generated Successfully")
+        logger.info("Step 2 completed: Mask Generateration successfully")
 
         debug_mask = (shirt_mask > 0).astype("uint8") * 255
 
@@ -334,49 +335,52 @@ class ShirtPipeline:
         # STEP 2.5 (NEW) : Shirt Mask -> Requested Garment Mask
         ############################################################
 
-        print("\nStep 2.5 : Prepare Garment Mask (", garment_type, ")")
+        logger.info(
+            "Step 2.5: Preparing garment mask | Garment type: %s",
+            garment_type
+        )
 
         garment_mask = self.garment_template.get_garment_mask(
             shirt_mask,
             garment_type=garment_type
         )
 
-        print("Garment Mask Ready")
+        logger.info(
+            "Step 2.5 completed: Garment mask is ready"
+        )
 
         cv2.imwrite(
             str(DEBUG_FOLDER/"debug_garment_mask.png" ),
             (garment_mask.astype("uint8") * 255) if garment_mask.dtype == bool else garment_mask
         )
 
-        ############################################################
-        # STEP 2.6 (NEW) : Garment Mask वरून योग्य bbox काढा
+        # ============================================================
+        # STEP 2.6: Get the correct bounding box from the garment mask.
         #
-        # detection["box"] हा फक्त "shirt" साठीचा GroundingDINO box
-        # आहे. Kurta साठी mask खाली-बाजूला जास्त पसरलेला असतो, पण
-        # आपण अजूनही तोच जुना (छोटा) shirt-box fabric fit साठी वापरत
-        # होतो -> त्यामुळे extend झालेला भाग काळा राहत होता.
+        # detection["box"] is the original GroundingDINO shirt box.
+        # For a kurta, the garment mask may extend below or outside
+        # the original shirt box.
         #
-        # इथे थेट garment_mask च्या पांढऱ्या pixels वरून नवीन bbox
-        # काढतो, आणि segmentation च्या काठावरच्या छोट्या चुका
-        # झाकण्यासाठी सगळ्या बाजूंनी 8 pixel चा सुरक्षित margin जोडतो.
+        # Get a new bounding box from the non-zero pixels of the
+        # garment mask. Add an 8-pixel margin on all sides and keep
+        # the box inside the person image boundaries.
         #
-        # (person_image आता वर, Step 1 नंतर लगेच वाचला गेला आहे,
-        # त्यामुळे इथे तो वापरता येतो.)
-        ############################################################
+        # person_image was already loaded after Step 1, so its shape
+        # can be used here.
+        # ============================================================
 
         mask_ys, mask_xs = np.where(garment_mask > 0)
 
-        # tight (0 margin) bounding box -- mask च्या शेवटच्या pixel ला टेकून
+        # Tight bounding box with no extra margin.
         tight_x1 = int(mask_xs.min())
         tight_y1 = int(mask_ys.min())
         tight_x2 = int(mask_xs.max())
         tight_y2 = int(mask_ys.max())
 
-        # सगळ्या बाजूंनी किती extra margin (pixels) जोडायचा
+        # Extra margin in pixels to add on all sides.
         BBOX_MARGIN = 8
 
-        # margin जोडा, आणि person image च्या सीमेत clamp करा
-        # (नाहीतर bbox image च्या बाहेर जाऊन नंतरचा safety-check fail होईल)
+        # Add the margin and keep the box inside the person image boundaries.
         person_h, person_w = person_image.shape[:2]
 
         padded_x1 = max(0, tight_x1 - BBOX_MARGIN)
@@ -391,26 +395,28 @@ class ShirtPipeline:
             float(padded_y2)
         ]
 
-        print("\nTight box (from garment_mask)   :", [tight_x1, tight_y1, tight_x2, tight_y2])
-        print("Fabric-fit box (with 8px margin) :", fabric_fit_box)
+        logger.info(
+            "Garment mask box ready | Tight box: %s | Fabric box with %d px margin: %s",
+            [tight_x1, tight_y1, tight_x2, tight_y2],
+            BBOX_MARGIN,
+            fabric_fit_box
+        )
 
         ############################################################
         # STEP 3
         ############################################################
 
-        print("\nStep 3 : Read Images")
+        logger.info("Step 3: Reading images and analyzing fabric")
 
-        # NOTE: person_image यापूर्वीच (Step 1 नंतर) वाचला गेला आहे,
-        # त्यामुळे इथे परत cv2.imread(person_image_path) करायची
-        # गरज नाही -- duplicate read काढला.
+        # person_image was already loaded after Step 1.
+        # Do not read it again here.
 
         fabric_image = cv2.imread(fabric_image_path)
 
         # ----------------------------------------------------------
-        # Analyse the uploaded fabric.
+        # Analyze the uploaded fabric.
         #
-        # The returned information will be used in future milestones
-        # such as:
+        # The returned information can be used for:
         #
         # - Virtual Fabric
         # - Panel Cutting
@@ -422,60 +428,66 @@ class ShirtPipeline:
         )
 
         # ----------------------------------------------------------
-        # Estimate pattern scale.
-        #
-        # Current version only prepares the architecture.
+        # Estimate the pattern scale.
         # ----------------------------------------------------------
-        print(fabric_info["pattern_repeat"])
+
+        logger.info(
+            "Fabric pattern repeat: %s",
+            fabric_info["pattern_repeat"]
+        )
 
         scale_info = self.pattern_scale_estimator.estimate(
             fabric_info
         )
 
-        print("\n========== Pattern Scale ==========")
+        logger.info(
+            "Pattern scale information: %s",
+            scale_info
+        )
 
-        for key, value in scale_info.items():
-            print(f"{key} : {value}")
-
-        print("===================================\n")
-
-        print("\n========== Fabric Information ==========")
-
-        for key, value in fabric_info.items():
-            print(f"{key} : {value}")
-
-        print("========================================\n")
+        logger.info(
+            "Fabric information: %s",
+            fabric_info
+        )
 
         if fabric_image is None:
             raise ValueError(
                 f"Unable to read fabric image : {fabric_image_path}"
             )
 
-        print("Person Image Shape :", person_image.shape)
-        print("Fabric Image Shape :", fabric_image.shape)
+        logger.info(
+            "Step 3 completed | Person image shape: %s | Fabric image shape: %s",
+            person_image.shape,
+            fabric_image.shape
+        )
 
         ############################################################
         # STEP 4
         ############################################################
 
-        print("\nStep 4 : Render Fabric")
+        logger.info(
+            "Step 4: Starting fabric rendering | Garment type: %s",
+            garment_type
+        )
 
         result = self.fabric_renderer.render(
             person_image=person_image,
             shirt_mask=garment_mask,
             fabric_info=fabric_info,
-            garment_type= garment_type,
+            garment_type=garment_type,
             box=fabric_fit_box
-
         )
 
-        print("Fabric Rendering Completed")
+        logger.info("Step 4 completed: Fabric rendering finished")
 
         ############################################################
         # STEP 5
         ############################################################
 
-        print("\nStep 5 : Save Output")
+        logger.info(
+            "Step 5: Saving output | Output path: %s",
+            output_path
+        )
 
         output_folder = os.path.dirname(output_path)
 
@@ -487,13 +499,13 @@ class ShirtPipeline:
             result
         )
 
-        print("Output Saved Successfully")
-
-        print("\nOutput Path")
-        print(output_path)
+        logger.info(
+            "Step 5 completed: Output saved successfully | Output path: %s",
+            output_path
+        )
 
         # ============================================================
-        # STOP WHOLE PIPELINE MEMORY MONITORING
+        # STOP PIPELINE MEMORY MONITORING
         # ============================================================
 
         peak_memory_mb = self._stop_memory_monitor()
@@ -508,32 +520,18 @@ class ShirtPipeline:
         # FINAL MEMORY REPORT
         # ============================================================
 
-        print("\n========================================")
-        print("      PROJECT MEMORY USAGE REPORT")
-        print("========================================")
-
-        print(
-            f"RAM Before Pipeline : "
-            f"{pipeline_start_memory_mb:.2f} MB"
+        logger.info(
+            "Memory report | RAM before: %.2f MB | Peak RAM: %.2f MB | "
+            "RAM after: %.2f MB | Extra RAM used: %.2f MB",
+            pipeline_start_memory_mb,
+            peak_memory_mb,
+            pipeline_end_memory_mb,
+            extra_memory_mb
         )
 
-        print(
-            f"Peak RAM Used       : "
-            f"{peak_memory_mb:.2f} MB"
+        logger.info(
+            "Pipeline completed successfully | Output path: %s",
+            output_path
         )
-
-        print(
-            f"RAM After Pipeline  : "
-            f"{pipeline_end_memory_mb:.2f} MB"
-        )
-
-        print(
-            f"Extra RAM Required  : "
-            f"{extra_memory_mb:.2f} MB"
-        )
-
-        print("========================================")
-
-        print("\nPipeline Completed Successfully.")
 
         return output_path

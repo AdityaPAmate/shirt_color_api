@@ -1,40 +1,57 @@
-# api/ai/pipeline_singleton.py
 """
-ShirtPipeline chi ek global singleton instance provide karnyasathi ha module.
+Provides a global singleton instance of ShirtPipeline.
 
-Ka lagto:
-    ShirtPipeline.__init__() madhe GroundingDINO + SAM 2.1 load hotat --
-    he heavy, slow (CPU-only) operations aahet. Pratek API request la
-    navin ShirtPipeline() banवला tar pratek request 10-30+ sec lagतील.
+Why this is needed:
+    ShirtPipeline.__init__() loads GroundingDINO and SAM 2.1. These are
+    heavy and slow CPU-only operations. Creating a new ShirtPipeline instance
+    for every API request would reload the models and significantly increase
+    request processing time.
 
-    Ha module ekach global variable (_pipeline_instance) madhe pipeline
-    cache karto. AppConfig.ready() server start hotana ha eager-load
-    karto; test_pipeline.py sudhha hach function vaparto, tyamule
-    Django server ANI standalone test script doghehi shared/consistent
-    loading logic vapartat -- duplicate code nahi.
+    This module stores one global pipeline instance in _pipeline_instance.
+    AppConfig.ready() can preload it when the server starts. Standalone scripts
+    can also use the same accessor, keeping model-loading logic centralized.
 """
+
+import logging
 
 from api.ai.pipeline import ShirtPipeline
+
+
+logger = logging.getLogger(__name__)
 
 _pipeline_instance = None
 
 
 def get_pipeline() -> ShirtPipeline:
     """
-    Global singleton accessor.
+    Return the global ShirtPipeline singleton instance.
 
-    Pahilyanda call zalyavar ShirtPipeline() banto (GroundingDINO + SAM2.1
-    load -- slow, EKDACH hoto). Tyanantar pudhchya pratek call la
-    tich cached instance return hoto (fast, model reload nahi).
+    On the first call, ShirtPipeline is created and the AI models are loaded.
+    Subsequent calls return the cached instance without reloading the models.
     """
     global _pipeline_instance
+
     if _pipeline_instance is None:
-        print("[pipeline_singleton] Loading ShirtPipeline (GroundingDINO + SAM2.1)... ekdach hoil.")
+        logger.info(
+            "MODEL_LOADING_STARTED | models=GroundingDINO,SAM2.1"
+        )
+
         _pipeline_instance = ShirtPipeline()
-        print("[pipeline_singleton] ShirtPipeline loaded and cached in memory.")
+
+        logger.info(
+            "MODEL_LOADING_COMPLETED | pipeline=ShirtPipeline"
+        )
+
     return _pipeline_instance
 
 
 def preload_pipeline():
-    """AppConfig.ready() madhun explicitly call karnyasathi -- eager loading trigger."""
+    """
+    Explicitly trigger eager loading of the global pipeline instance.
+    Called from AppConfig.ready() during application startup.
+    """
+    logger.info("PIPELINE_PRELOAD_STARTED")
+
     get_pipeline()
+
+    logger.info("PIPELINE_PRELOAD_COMPLETED")

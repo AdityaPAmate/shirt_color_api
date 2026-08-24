@@ -1,7 +1,11 @@
-# api/apps.py
+import logging
 import os
 import sys
+
 from django.apps import AppConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class ApiConfig(AppConfig):
@@ -10,27 +14,30 @@ class ApiConfig(AppConfig):
 
     def ready(self):
         """
-        Server start hotana (fakt EKDA) AI models load karnyasathi.
+        Preload AI models during application startup.
 
-        RUN_MAIN guard ka lagto:
-            `python manage.py runserver` vaparल्यावर Django cha
-            autoreloader EK parent (watcher) process + EK child process
-            asे 2 process spawn karto. ready() dohi process madhe call
-            hoto. Guard nasel tar GroundingDINO + SAM2.1 DONDA load
-            hotil (double memory, double load-time).
+        Development behavior:
+            Django's runserver autoreloader creates two processes:
+            a parent watcher process and a child server process. The ready()
+            method runs in both processes, so the RUN_MAIN guard prevents the
+            heavy AI models from being loaded twice.
 
-            Child process madhech RUN_MAIN="true" environment variable
-            set aste -- tyamule tithech actual loading karto.
-
-        Production (gunicorn/uwsgi) madhe `runserver` argv madhe naste,
-        tyamule ha guard skip hoto ani ready() normally ekdach chalto.
+        Production behavior:
+            Gunicorn does not use Django's runserver autoreloader. Therefore,
+            the guard is skipped and the pipeline is preloaded normally.
         """
         is_runserver = "runserver" in sys.argv
 
         if is_runserver and os.environ.get("RUN_MAIN") != "true":
-            # ha autoreloader cha parent (watcher) process aahe -- ithe
-            # load karaycha nahi, child process madhech khara loading hoil.
+            logger.info(
+                "MODEL_PRELOAD_SKIPPED | reason=runserver_autoreloader_parent"
+            )
             return
 
+        logger.info("APPLICATION_STARTUP | pipeline_preload=started")
+
         from api.ai.pipeline_singleton import preload_pipeline
+
         preload_pipeline()
+
+        logger.info("APPLICATION_STARTUP | pipeline_preload=completed")

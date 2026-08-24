@@ -3,10 +3,11 @@ detector.py
 
 Purpose:
 --------
-Load the GroundingDINO model once and detect a shirt in an input image.
+Load the GroundingDINO model once and detect a garment in an input image.
 """
 
 # Python built-in library
+import logging
 from pathlib import Path
 
 import cv2
@@ -16,39 +17,51 @@ from api.ai.utils import log_execution_time
 from groundingdino.util.inference import Model
 
 
+logger = logging.getLogger(__name__)
 
 
 class ShirtDetector:
     """
-    Loads the GroundingDINO model only once and reuses it.
+    Load the GroundingDINO model once and reuse the same model instance.
     """
 
-    # Shared model instance for all ShirtDetector objects
+    # Shared model instance for all ShirtDetector objects.
     _model = None
 
     def __init__(self):
 
-        # If the model is already loaded, reuse it
+        # If the model is already loaded, reuse the existing model
+        # instead of loading it again.
         if ShirtDetector._model is not None:
             self.model = ShirtDetector._model
             return
 
-        # Project root directory
+        # Find the project root directory so that model files can be
+        # loaded correctly from the project structure.
         BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-        # Configuration file
+        # Path to the GroundingDINO model configuration file.
         config_path = (
-            BASE_DIR/ "ai_models"/ "grounding_dino"/ "configs"/ "GroundingDINO_SwinT_OGC.py"
+            BASE_DIR
+            / "ai_models"
+            / "grounding_dino"
+            / "configs"
+            / "GroundingDINO_SwinT_OGC.py"
         )
 
-        # Model checkpoint
-        checkpoint_path = (BASE_DIR/ "ai_models"/ "grounding_dino"/ "checkpoints"/ "groundingdino_swint_ogc.pth"
+        # Path to the GroundingDINO model checkpoint file.
+        checkpoint_path = (
+            BASE_DIR
+            / "ai_models"
+            / "grounding_dino"
+            / "checkpoints"
+            / "groundingdino_swint_ogc.pth"
         )
 
-        # Device
+        # The project currently runs GroundingDINO on the CPU.
         device = "cpu"
 
-        print("Loading GroundingDINO...")
+        logger.info("Loading GroundingDINO model...")
 
         ShirtDetector._model = Model(
             model_config_path=str(config_path),
@@ -58,15 +71,15 @@ class ShirtDetector:
 
         self.model = ShirtDetector._model
 
-        print("GroundingDINO Loaded Successfully.")
+        logger.info("GroundingDINO model loaded successfully.")
 
     @log_execution_time
     def detect_shirt(
-            self,
-            image_path,
-            detection_target="shirt",
-            box_threshold=0.35,
-            text_threshold=0.25,
+        self,
+        image_path,
+        detection_target="shirt",
+        box_threshold=0.35,
+        text_threshold=0.25,
     ):
         """
         Detect a garment in an image.
@@ -77,18 +90,16 @@ class ShirtDetector:
             Path to the input image.
 
         detection_target : str
-            GroundingDINO la denyacha text prompt / class name --
-            "shirt", "pant", "jacket", "kurta" etc. Pipeline
-            (ani tyavarun API/Postman) varun ha bahyerun pass hoto.
-            Default "shirt" aahe (jashi purvi hardcoded value hoti,
-            tyamule jar koni ha parameter dila nahi tar juna
-            behavior tasach rahto).
+            Text prompt or class name given to GroundingDINO.
+            Examples include "shirt", "pant", "jacket", and "kurta".
+            This value can be passed from the pipeline or API.
+            The default value is "shirt".
 
         box_threshold : float
             Minimum confidence required for object detection.
 
         text_threshold : float
-            Minimum confidence required for text matching.
+            Minimum confidence required for matching the text prompt.
 
         Returns
         -------
@@ -99,7 +110,9 @@ class ShirtDetector:
         image = cv2.imread(str(image_path))
 
         if image is None:
-            raise FileNotFoundError(f"Unable to read image: {image_path}")
+            raise FileNotFoundError(
+                f"Unable to read image: {image_path}"
+            )
 
         detections = self.model.predict_with_classes(
             image=image,
@@ -111,14 +124,17 @@ class ShirtDetector:
         if len(detections.xyxy) == 0:
             return None
 
-        # Original box
+        # Get the first detected bounding box from GroundingDINO.
         x1, y1, x2, y2 = detections.xyxy[0]
 
-        # Read image to know its dimensions
+        # Read the image again to get its height and width.
+        # These dimensions are used to keep the padded box inside
+        # the image boundaries.
         image = cv2.imread(str(image_path))
         height, width = image.shape[:2]
 
-        # Add padding
+        # Add a small padding around the detected garment so that
+        # the bounding box includes a little extra area around it.
         padding = 12
 
         x1 = max(0, x1 - padding)
