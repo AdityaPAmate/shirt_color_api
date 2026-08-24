@@ -9,13 +9,22 @@ Purpose:
 Reference:
     Xu, Yan, Xia, Jia - "Structure Extraction from Texture via
     Relative Total Variation", SIGGRAPH Asia 2012.
-"""
 
+CHANGELOG
+---------
+NEW (v13, Cloud-deployment prep track): Marathi comments converted to
+     plain English, print() debug statements converted to
+     logger.info() (module-level logger). No logic changes, and no
+     dead code found in this file -- every function here is still
+     actively used.
+"""
+import logging
 import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 import cv2
 from api.ai.utils import log_execution_time
+logger = logging.getLogger(__name__)
 
 
 def _compute_texture_weights(fin, sigma, eps=1e-3):
@@ -114,8 +123,8 @@ def extract_rtv_structure(
     crop_mask = mask_bin[y0:y1, x0:x1]
 
     # ------------------------------------------------------------
-    # NEW: शर्ट नसलेला भाग (केस, मान, background) inpaint करा
-    # जेणेकरून RTV ला फक्त शर्टचाच content दिसेल
+    # Inpaint the non-shirt area (hair, neck, background) so that
+    # RTV only sees the shirt's own content.
     # ------------------------------------------------------------
     non_shirt_area = (crop_mask == 0).astype(np.uint8) * 255
     crop = cv2.inpaint(crop, non_shirt_area, 9, cv2.INPAINT_TELEA)
@@ -143,28 +152,29 @@ def extract_rtv_structure(
     )
 
     # ----------------------------------------------------------------
-    # NEW (Issue #9 fix): local_mean चा blur sigma आता FIXED 21 नाही.
+    # (Issue #9 fix): local_mean's blur sigma is no longer a FIXED 21.
     #
-    # हा blur, प्रत्येक भागाचा स्वतःचा रंग/albedo काढून टाकून फक्त
-    # shading (structure/local_mean) उरवण्यासाठी वापरला जातो. पण
-    # fixed sigma=21 हा garment च्या fabric-panel सीमा (उदा. zipper,
-    # वेगळ्या रंगाचे sleeve/body panels) पूर्णपणे smooth करू शकत
-    # नव्हता, विशेषतः मोठ्या crop वर -- त्यामुळे त्या सीमांभोवती
-    # खोटा "shading halo" तयार होत होता, जो नेमका garment च्या
-    # shape/seam च्या बाजूनेच दिसत होता (checks नसतानाही).
+    # This blur is used to strip out each region's own color/albedo,
+    # leaving only shading (structure/local_mean) behind. But a fixed
+    # sigma=21 could not fully smooth out the garment's fabric-panel
+    # boundaries (e.g. a zipper, differently-colored sleeve/body
+    # panels), especially on a large crop -- so a false "shading halo"
+    # was forming around those boundaries, following exactly the
+    # garment's shape/seam lines (even with no checks present).
     #
-    # आता हा sigma crop च्या actual size वरून adaptive आहे -- मोठ्या
-    # crop वर मोठा blur (panel boundaries नीट smooth होण्यासाठी),
-    # लहान crop वर लहान blur (fold detail टिकून राहण्यासाठी).
+    # Now this sigma is adaptive to the crop's actual size -- a larger
+    # blur on a larger crop (so panel boundaries get smoothed out
+    # properly), a smaller blur on a smaller crop (so fold detail is
+    # preserved).
     # ----------------------------------------------------------------
     crop_h, crop_w = structure_crop.shape[:2]
     crop_min_dim = max(1, min(crop_h, crop_w))
 
     local_mean_sigma = max(15.0, min(80.0, crop_min_dim * 0.12))
 
-    print(
-        f"extract_rtv_structure -> crop_min_dim: {crop_min_dim}, "
-        f"local_mean_sigma (adaptive): {local_mean_sigma:.2f}"
+    logger.info(
+        "extract_rtv_structure | crop_min_dim: %s | local_mean_sigma (adaptive): %.2f",
+        crop_min_dim, local_mean_sigma
     )
 
     local_mean = cv2.GaussianBlur(structure_crop, (0, 0), local_mean_sigma)
@@ -172,7 +182,7 @@ def extract_rtv_structure(
     shading_crop = structure_crop / local_mean
 
     # ------------------------------------------------------------
-    # NEW: सुरक्षा -- शर्ट नसलेल्या pixel वर shading = 1.0 (neutral) करा
+    # Safety: force shading = 1.0 (neutral) on non-shirt pixels.
     # ------------------------------------------------------------
     shading_crop[crop_mask == 0] = 1.0
 
