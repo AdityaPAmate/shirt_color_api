@@ -489,8 +489,8 @@ class FabricAnalyzer:
         if not significant:
             return None
 
-        logger.debug("Detected peaks: %s", significant)
-        logger.debug("Selected repeat: %s", max(significant))
+        logger.info("Found repeat peaks (x-axis): %s", significant)
+        logger.info("Chosen repeat value (x-axis): %s", max(significant))
 
         # This function used to require at least 2 peaks before
         # accepting a repeat value -- so a strong, confident single
@@ -614,8 +614,8 @@ class FabricAnalyzer:
         if not significant:
             return None
 
-        logger.debug("Detected Y-axis peaks: %s", significant)
-        logger.debug("Selected Y-axis repeat: %s", max(significant))
+        logger.info("Found repeat peaks (y-axis): %s", significant)
+        logger.info("Chosen repeat value (y-axis): %s", max(significant))
 
         # Same reasoning as detect_pattern_repeat(): the "at least 2
         # peaks required" rule has been removed. A single confident
@@ -649,7 +649,7 @@ class FabricAnalyzer:
 
         edge_ratio = np.count_nonzero(edges) / edges.size
 
-        logger.debug("Edge ratio: %.4f", edge_ratio)
+        logger.info("Edge ratio for this fabric: %.4f", edge_ratio)
 
         return edge_ratio > 0.03
 
