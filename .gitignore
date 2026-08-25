@@ -70,3 +70,5 @@ ai_models/mediapipe/
 # ============================================================
 .DS_Store
 Thumbs.db
+
+env-vars.yaml

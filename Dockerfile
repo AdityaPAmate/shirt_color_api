@@ -88,10 +88,4 @@ EXPOSE 8080
 # One worker is intentionally used because each worker would load
 # GroundingDINO and SAM models into its own process memory.
 # ============================================================
-CMD sh -c "gunicorn config.wsgi:application \
-    --bind 0.0.0.0:${PORT} \
-    --workers 1 \
-    --timeout 300 \
-    --access-logfile - \
-    --error-logfile - \
-    --capture-output"
+CMD ["python", "startup.py"]
