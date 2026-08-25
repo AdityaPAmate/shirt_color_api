@@ -16,6 +16,9 @@ from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from api.ai.utils import log_execution_time
 
+from hydra import initialize_config_dir
+from hydra.core.global_hydra import GlobalHydra
+
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +60,30 @@ class ShirtSegmenter:
         )
 
         # The project currently runs SAM 2.1 on the CPU.
+        # The project currently runs SAM 2.1 on the CPU.
         device = "cpu"
 
         logger.info("Loading SAM 2.1 model...")
 
-        sam_model = build_sam2(
-            config_file=str(config_path),
-            ckpt_path=str(checkpoint_path),
-            device=device,
-        )
+        # Hydra's compose() (called inside build_sam2) cannot resolve an
+        # absolute filesystem path as config_file -- this is a known
+        # Hydra/SAM2 limitation (it strips the leading "/" and looks for
+        # the rest relative to its own registered search paths, so it
+        # never finds a real absolute path). The fix: register the
+        # config's actual directory as a Hydra search path ourselves,
+        # then pass just the filename to build_sam2().
+        config_dir = str(config_path.parent.resolve())
+        config_name = config_path.name
+
+        if GlobalHydra.instance().is_initialized():
+            GlobalHydra.instance().clear()
+
+        with initialize_config_dir(config_dir=config_dir, version_base="1.2"):
+            sam_model = build_sam2(
+                config_file=config_name,
+                ckpt_path=str(checkpoint_path),
+                device=device,
+            )
 
         ShirtSegmenter._predictor = SAM2ImagePredictor(sam_model)
         self.predictor = ShirtSegmenter._predictor

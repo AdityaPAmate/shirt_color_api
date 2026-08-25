@@ -40,3 +40,7 @@ Thumbs.db
 
 # Docker local configuration
 docker-compose.yml
+
+# AI model checkpoints -- large files, kept out of the Docker image,
+# served from Google Cloud Storage instead
+ai_models/

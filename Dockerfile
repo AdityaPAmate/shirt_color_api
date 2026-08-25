@@ -43,8 +43,22 @@ COPY requirements.txt .
 # ============================================================
 # Install Python dependencies
 # ============================================================
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+# ============================================================
+# Install Python dependencies
+# ============================================================
+
+RUN pip install --upgrade pip setuptools wheel
+
+
+# Install PyTorch first so GroundingDINO can use the installed package.
+RUN pip install \
+    torch==2.6.0 \
+    torchvision==0.21.0 \
+    torchaudio==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install the remaining dependencies.
+RUN pip install --no-build-isolation -r requirements.txt
 
 
 # ============================================================
