@@ -9,6 +9,7 @@ Load the GroundingDINO model once and detect a garment in an input image.
 # Python built-in library
 import logging
 from pathlib import Path
+import torch
 
 import cv2
 from api.ai.utils import log_execution_time
@@ -114,12 +115,13 @@ class ShirtDetector:
                 f"Unable to read image: {image_path}"
             )
 
-        detections = self.model.predict_with_classes(
-            image=image,
-            classes=[detection_target],
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
+        with torch.no_grad():
+            detections = self.model.predict_with_classes(
+                image=image,
+                classes=[detection_target],
+                box_threshold=box_threshold,
+                text_threshold=text_threshold,
+            )
 
         if len(detections.xyxy) == 0:
             return None

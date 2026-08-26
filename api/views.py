@@ -1,5 +1,6 @@
 # api/views.py
 import os
+import gc
 import uuid
 from pathlib import Path
 
@@ -100,6 +101,16 @@ class ReplaceFabricView(APIView):
                     os.remove(p)
                 except OSError:
                     pass
+
+            # NEW: request sampल्यावर memory forcefully OS la परत करण्यासाठी
+            import gc
+            import ctypes
+
+            gc.collect()
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
 
         if not output_path.exists():
             return Response(

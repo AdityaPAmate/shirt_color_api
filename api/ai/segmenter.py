@@ -8,6 +8,7 @@ Load the SAM 2.1 model once and use it for image segmentation.
 
 import logging
 from pathlib import Path
+import torch
 
 import cv2
 import numpy as np
@@ -122,17 +123,18 @@ class ShirtSegmenter:
         # because SAM expects an RGB image.
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Give the image to SAM before running the prediction.
-        self.predictor.set_image(image)
+        with torch.no_grad():
+            # Give the image to SAM before running the prediction.
+            self.predictor.set_image(image)
 
-        # Convert the bounding box to a NumPy array for SAM.
-        input_box = np.array(box)
+            # Convert the bounding box to a NumPy array for SAM.
+            input_box = np.array(box)
 
-        # Predict the possible segmentation masks using the bounding box.
-        masks, scores, logits = self.predictor.predict(
-            box=input_box,
-            multimask_output=True,
-        )
+            # Predict the possible segmentation masks using the bounding box.
+            masks, scores, logits = self.predictor.predict(
+                box=input_box,
+                multimask_output=True,
+            )
 
         # Select the mask with the highest confidence score.
         best_index = np.argmax(scores)
